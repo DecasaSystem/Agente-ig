@@ -287,7 +287,7 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
       ? `https://ig.me/m/${userInfo.username}`
       : null
 
-    await axios.post(`${apiUrl}/api/redes/webhook`, {
+    const payload = {
       tipo,
       telefono:       psid,
       nombre_cliente: userInfo?.nombre ?? username,
@@ -296,13 +296,23 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
       whatsapp_url:   null,
       fuente:         'instagram',
       contacto_url:   contactoUrl,
-    }, {
-      headers:  { 'X-Agent-Token': apiToken ?? '' },
-      timeout:  8000,
-    })
+    }
+    const config = { headers: { 'X-Agent-Token': apiToken ?? '' }, timeout: 15000 }
+
+    // Retry una vez si hay 429 (Render free tier sleeping)
+    try {
+      await axios.post(`${apiUrl}/api/redes/webhook`, payload, config)
+    } catch (e) {
+      if (e.response?.status === 429 || e.response?.status === 503) {
+        await new Promise(r => setTimeout(r, 5000))
+        await axios.post(`${apiUrl}/api/redes/webhook`, payload, config)
+      } else {
+        throw e
+      }
+    }
     console.log(`[redes] Notificación enviada — tipo: ${tipo}, psid: ${psid}`)
   } catch (e) {
-    console.error('[redes] Error enviando notificación:', e.response?.data ?? e.message)
+    console.error('[redes] Error enviando notificación:', e.response?.status ?? e.message)
   }
 }
 
@@ -347,17 +357,25 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
 
   let mensajeAI = texto ?? ''
 
-  // Post compartido en DM — extraer caption del attachment
+  // Post compartido en DM — buscar el producto automáticamente y dar contexto a la IA
   if (adjuntos?.length) {
     const postCompartido = adjuntos.find(a => a.type === 'share')
     if (postCompartido) {
       const caption = postCompartido.payload?.title ?? ''
-      const url     = postCompartido.payload?.url ?? ''
-      const ctx     = caption ? `"${caption}"` : url || 'una publicación de DeCasa'
-      mensajeAI = `[El cliente compartió una publicación de @muebles_decasa: ${ctx}] ${mensajeAI || 'Quiero más información sobre esto'}`
+      if (caption) {
+        const resultados = buscarEnInventario(caption, null, 3)
+        if (resultados.length) {
+          const info = resultados.map(formatProducto).join('\n\n')
+          mensajeAI = `[El cliente compartió la publicación: "${caption}". Información del producto en inventario:\n${info}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
+        } else {
+          mensajeAI = `[El cliente compartió la publicación: "${caption}" pero no está en el inventario actual]\n${mensajeAI || 'Quiero más información sobre este producto'}`
+        }
+      } else {
+        mensajeAI = `[El cliente compartió una publicación de @muebles_decasa] ${mensajeAI || 'Quiero más información sobre esto'}`
+      }
     }
 
-    // Media adjunta (video/reel/imagen desde post)
+    // Video/reel compartido
     const mediaAdj = adjuntos.find(a => ['video', 'reel', 'ig_reel'].includes(a.type))
     if (mediaAdj && !mensajeAI.trim()) {
       mensajeAI = '[El cliente compartió un video/reel de @muebles_decasa] Quiero más información'
