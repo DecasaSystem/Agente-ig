@@ -61,7 +61,7 @@ async function actualizarInteraccion(psid) {
 async function getEstado(psid) {
   const [rows] = await pool.query(
     `SELECT eu.* FROM estado_usuario eu
-     JOIN clientes_wa c ON c.id = eu.cliente_id
+     JOIN clientes_wa c ON c.id = eu.usuario_id
      WHERE c.telefono = ? LIMIT 1`,
     [igTel(psid)]
   )
@@ -73,7 +73,7 @@ async function setEstado(psid, campos) {
   if (!clienteId) return
 
   const [existing] = await pool.query(
-    'SELECT id FROM estado_usuario WHERE cliente_id = ?', [clienteId]
+    'SELECT 1 FROM estado_usuario WHERE usuario_id = ?', [clienteId]
   )
 
   const keys   = Object.keys(campos)
@@ -84,11 +84,11 @@ async function setEstado(psid, campos) {
   if (existing.length) {
     const sets = keys.map(k => `${k} = ?`).join(', ')
     await pool.query(
-      `UPDATE estado_usuario SET ${sets} WHERE cliente_id = ?`,
+      `UPDATE estado_usuario SET ${sets} WHERE usuario_id = ?`,
       [...values, clienteId]
     )
   } else {
-    const cols = ['cliente_id', ...keys].join(', ')
+    const cols = ['usuario_id', ...keys].join(', ')
     const phs  = ['?', ...keys.map(() => '?')].join(', ')
     await pool.query(
       `INSERT INTO estado_usuario (${cols}) VALUES (${phs})`,
@@ -110,7 +110,7 @@ async function setUltimoProducto(psid, data) {
 async function limpiarEstado(psid) {
   const clienteId = await _clienteId(psid)
   if (!clienteId) return
-  await pool.query('DELETE FROM estado_usuario WHERE cliente_id = ?', [clienteId])
+  await pool.query('DELETE FROM estado_usuario WHERE usuario_id = ?', [clienteId])
 }
 
 // ── Historial de conversación ─────────────────────────────────────────────────
