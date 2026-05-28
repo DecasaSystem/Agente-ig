@@ -2,7 +2,7 @@
 require('dotenv').config()
 const axios = require('axios')
 
-const BASE  = 'https://graph.facebook.com/v19.0'
+const BASE  = 'https://graph.instagram.com/v22.0'
 const TOKEN = () => process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
 
 // Enviar texto al usuario (dividir si supera 1000 chars)
