@@ -156,13 +156,21 @@ const TOOLS = [
   },
 ]
 
-async function callGemini(psid, mensajeUsuario) {
+async function callGemini(psid, mensajeUsuario, imageBase64 = null) {
   const historial = await db.getHistorial(psid, 12)
+
+  // Si hay imagen, el último mensaje del usuario incluye la imagen para visión
+  const userContent = imageBase64
+    ? [
+        { type: 'text', text: mensajeUsuario },
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}`, detail: 'low' } },
+      ]
+    : mensajeUsuario
 
   const messages = [
     { role: 'system', content: buildSystemPrompt() },
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
-    { role: 'user', content: mensajeUsuario },
+    { role: 'user', content: userContent },
   ]
 
   const tools = TOOLS.map(t => ({
@@ -356,23 +364,48 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   }
 
   let mensajeAI = texto ?? ''
+  let imageBase64 = null  // imagen para visión de la IA
 
-  // Post compartido en DM — buscar el producto automáticamente y dar contexto a la IA
+  // Post compartido en DM — buscar producto + intentar obtener imagen del post
   if (adjuntos?.length) {
     const postCompartido = adjuntos.find(a => a.type === 'share')
     if (postCompartido) {
-      const caption = postCompartido.payload?.title ?? ''
+      const caption  = postCompartido.payload?.title ?? ''
+      const mediaId  = postCompartido.payload?.id ?? postCompartido.payload?.media_id ?? null
+      const mediaUrl = postCompartido.payload?.media?.image?.src
+        ?? postCompartido.payload?.image_data?.url
+        ?? null
+
+      // Intentar descargar imagen del post para visión
+      const urlImagen = mediaUrl ?? (mediaId ? (await ig.getMediaDetails(mediaId))?.media_url : null)
+      if (urlImagen) {
+        try {
+          const { buffer } = await ig.downloadMediaToBuffer(urlImagen)
+          imageBase64 = buffer.toString('base64')
+        } catch { /* si no se puede descargar, continuar sin imagen */ }
+      }
+
       if (caption) {
         const resultados = buscarEnInventario(caption, null, 3)
         if (resultados.length) {
           const info = resultados.map(formatProducto).join('\n\n')
-          mensajeAI = `[El cliente compartió la publicación: "${caption}". Información del producto en inventario:\n${info}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
+          mensajeAI = `[El cliente compartió la publicación: "${caption}". Producto en inventario:\n${info}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
         } else {
-          mensajeAI = `[El cliente compartió la publicación: "${caption}" pero no está en el inventario actual]\n${mensajeAI || 'Quiero más información sobre este producto'}`
+          mensajeAI = `[El cliente compartió la publicación: "${caption}"]\n${mensajeAI || 'Quiero más información sobre este producto'}`
         }
       } else {
         mensajeAI = `[El cliente compartió una publicación de @muebles_decasa] ${mensajeAI || 'Quiero más información sobre esto'}`
       }
+    }
+
+    // Imagen directa que no es visualización de cuarto — pasar a visión de la IA
+    const imagenes = adjuntos.filter(a => a.type === 'image')
+    if (imagenes.length && !imageBase64 && !esVisualizacion(texto)) {
+      try {
+        const { buffer } = await ig.downloadMediaToBuffer(imagenes[0].payload.url)
+        imageBase64 = buffer.toString('base64')
+        if (!mensajeAI.trim()) mensajeAI = 'El cliente envió una imagen'
+      } catch { /* continuar sin imagen */ }
     }
 
     // Video/reel compartido
@@ -382,12 +415,18 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     }
   }
 
-  // Respuesta a historia — intentar obtener caption de la historia
+  // Respuesta a historia — intentar obtener caption e imagen
   if (esStoryReply) {
     let storyCtx = ''
     if (storyId) {
       const details = await ig.getMediaDetails(storyId)
       if (details?.caption) storyCtx = ` La historia decía: "${details.caption}".`
+      if (details?.media_url && !imageBase64) {
+        try {
+          const { buffer } = await ig.downloadMediaToBuffer(details.media_url)
+          imageBase64 = buffer.toString('base64')
+        } catch { /* continuar sin imagen */ }
+      }
     }
     const prefijo = `[El cliente respondió a una historia de @muebles_decasa.${storyCtx}]`
     mensajeAI = `${prefijo} ${mensajeAI || 'Quiero más información'}`
@@ -395,10 +434,10 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
 
   if (!mensajeAI.trim()) return
 
-  await db.guardarMensaje(psid, 'user', mensajeAI)
+  await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
 
   try {
-    const respuesta = await callGemini(psid, mensajeAI)
+    const respuesta = await callGemini(psid, mensajeAI, imageBase64)
 
     if (respuesta.tipo === 'tool') {
       const toolResult = await ejecutarTool(psid, respuesta.nombre, respuesta.args, userInfo)
