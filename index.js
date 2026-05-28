@@ -320,7 +320,8 @@ app.post('/webhook/instagram', (req, res) => {
   }
 
   const body = req.body
-  if (body.object !== 'instagram') return
+  console.log(`[webhook] object=${body.object} entries=${body.entry?.length ?? 0}`)
+  if (body.object !== 'instagram' && body.object !== 'page') return
 
   for (const entry of body.entry ?? []) {
     for (const event of entry.messaging ?? []) {
