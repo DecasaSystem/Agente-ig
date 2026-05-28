@@ -13,6 +13,33 @@ const pool = mysql.createPool({
   connectionLimit:    5,
 })
 
+async function runMigrations() {
+  const migraciones = [
+    `ALTER TABLE clientes_wa ADD COLUMN instagram_psid VARCHAR(50) UNIQUE NULL`,
+    `ALTER TABLE clientes_wa ADD COLUMN instagram_username VARCHAR(100) NULL`,
+    `CREATE TABLE IF NOT EXISTS conversaciones (
+      id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      instagram_psid VARCHAR(50) NOT NULL,
+      role           ENUM('user','assistant') NOT NULL,
+      content        TEXT NOT NULL,
+      created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_psid_created (instagram_psid, created_at)
+    )`,
+  ]
+  for (const sql of migraciones) {
+    try {
+      await pool.query(sql)
+      console.log('[db] migración OK:', sql.substring(0, 55).trim())
+    } catch (e) {
+      if (e.code === 'ER_DUP_FIELDNAME') {
+        console.log('[db] columna ya existe, ok')
+      } else {
+        console.error('[db] migración error:', e.message)
+      }
+    }
+  }
+}
+
 // ── Clientes (por PSID) ───────────────────────────────────────────────────────
 
 async function getOrCreateClienteByPsid(psid, username, nombre) {
@@ -138,6 +165,7 @@ async function _clienteId(psid) {
 }
 
 module.exports = {
+  runMigrations,
   getOrCreateClienteByPsid,
   actualizarInteraccion,
   getEstado,

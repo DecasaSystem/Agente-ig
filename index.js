@@ -400,7 +400,7 @@ app.get('/delete-data', (req, res) => {
 
 // ── Inicio ────────────────────────────────────────────────────────────────────
 async function startServer() {
-  await require('./init-db').main()
+  await db.runMigrations()
   await cargarInventario()
   setInterval(cargarInventario, 30 * 60 * 1000)
 
