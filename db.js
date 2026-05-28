@@ -19,7 +19,7 @@ const igTel = psid => `ig_${psid}`
 async function runMigrations() {
   try {
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS conversaciones (
+      CREATE TABLE IF NOT EXISTS ig_conversaciones (
         id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         instagram_psid VARCHAR(50) NOT NULL,
         role           ENUM('user','assistant') NOT NULL,
@@ -117,7 +117,7 @@ async function limpiarEstado(psid) {
 
 async function getHistorial(psid, limite = 12) {
   const [rows] = await pool.query(
-    `SELECT role, content FROM conversaciones
+    `SELECT role, content FROM ig_conversaciones
      WHERE instagram_psid = ?
      ORDER BY created_at DESC LIMIT ?`,
     [psid, limite]
@@ -127,7 +127,7 @@ async function getHistorial(psid, limite = 12) {
 
 async function guardarMensaje(psid, role, content) {
   await pool.query(
-    'INSERT INTO conversaciones (instagram_psid, role, content) VALUES (?, ?, ?)',
+    'INSERT INTO ig_conversaciones (instagram_psid, role, content) VALUES (?, ?, ?)',
     [psid, role, typeof content === 'object' ? JSON.stringify(content) : content]
   )
 }
