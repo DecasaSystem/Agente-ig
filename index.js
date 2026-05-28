@@ -373,7 +373,8 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
 
     case 'solicitar_asesor': {
       await enviarNotificacionSistema(psid, userInfo, args.motivo, args.tipo)
-      return `Entendido, voy a conectarte con uno de nuestros asesores. Estarán contigo en breve 😊`
+      const aviso = avisoHorarioTarde()
+      return `Entendido, voy a conectarte con uno de nuestros asesores 😊${aviso ? `\n\n${aviso}` : ''}`
     }
 
     case 'ver_carrito': {
@@ -496,6 +497,13 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
   } catch (e) {
     console.error('[redes] Error enviando notificación:', e.response?.status ?? e.message)
   }
+}
+
+function avisoHorarioTarde() {
+  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota', hour: 'numeric', hour12: false }))
+  return (h >= 21 || h < 8)
+    ? '⚠️ Ten en cuenta que ya es tarde — puede que el asesor te responda mañana, pero haremos nuestro mejor esfuerzo por atenderte. ¡Gracias por tu paciencia! 🙏'
+    : null
 }
 
 // ── Detección de foto de cuarto ───────────────────────────────────────────────
