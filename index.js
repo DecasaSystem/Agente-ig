@@ -73,6 +73,12 @@ INSTRUCCIONES OBLIGATORIAS:
 5. Para agendar → pide nombre, sede (1-5), día, hora, motivo; luego llama agendar_cita
 6. Máximo 150 palabras por respuesta
 
+VISIÓN DE IMÁGENES:
+- Puedes ver imágenes cuando el cliente las comparte
+- Si el cliente comparte una publicación con imagen: descríbela brevemente y responde con la info del producto que aparece en el contexto
+- Si el cliente envía una foto de un mueble o producto: identifica qué es, busca en el inventario y ofrece ese producto o similares
+- NUNCA digas que no puedes ver imágenes — siempre tienes capacidad de visión cuando se te envía una imagen
+
 TÉRMINOS AMBIGUOS — pregunta ANTES de buscar:
 - "sillas" → "¿Buscas sillas de comedor, sillas auxiliares (sala/decoración) o sillas de barra?"
 - "mesas" → "¿Buscas mesa de centro, mesa auxiliar, mesa de noche o mesa para TV?"
@@ -370,19 +376,27 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   if (adjuntos?.length) {
     const postCompartido = adjuntos.find(a => a.type === 'share')
     if (postCompartido) {
+      console.log('[post] payload:', JSON.stringify(postCompartido.payload ?? {}))
+
       const caption  = postCompartido.payload?.title ?? ''
-      const mediaId  = postCompartido.payload?.id ?? postCompartido.payload?.media_id ?? null
+      const mediaId  = postCompartido.payload?.id
+        ?? postCompartido.payload?.media_id
+        ?? postCompartido.payload?.media?.id
+        ?? null
       const mediaUrl = postCompartido.payload?.media?.image?.src
         ?? postCompartido.payload?.image_data?.url
+        ?? postCompartido.payload?.media_url
         ?? null
 
       // Intentar descargar imagen del post para visión
       const urlImagen = mediaUrl ?? (mediaId ? (await ig.getMediaDetails(mediaId))?.media_url : null)
+      console.log(`[post] mediaId=${mediaId} urlImagen=${urlImagen ?? 'none'}`)
       if (urlImagen) {
         try {
           const { buffer } = await ig.downloadMediaToBuffer(urlImagen)
           imageBase64 = buffer.toString('base64')
-        } catch { /* si no se puede descargar, continuar sin imagen */ }
+          console.log('[post] imagen descargada para visión')
+        } catch (e) { console.warn('[post] no se pudo descargar imagen:', e.message) }
       }
 
       if (caption) {
