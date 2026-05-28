@@ -512,6 +512,9 @@ app.post('/webhook/instagram', (req, res) => {
       const storyUrl   = event.message?.reply_to?.story?.url ?? null
       const storyId    = event.message?.reply_to?.story?.id ?? null
 
+      // Log para debug de estructura de mensaje
+      console.log(`[msg] psid=${psid} texto=${texto ?? 'null'} adjuntos=${adjuntos ? JSON.stringify(adjuntos) : 'null'}`)
+
       if (!psid) continue
 
       handleMessage(psid, texto, adjuntos, storyReply, storyUrl, storyId)
