@@ -22,8 +22,8 @@ async function getOrCreateClienteByPsid(psid, username, nombre) {
   if (rows.length) return rows[0].id
 
   const [res] = await pool.query(
-    'INSERT INTO clientes_wa (instagram_psid, instagram_username, nombre, last_interaction) VALUES (?,?,?,NOW())',
-    [psid, username ?? null, nombre ?? username ?? psid]
+    'INSERT INTO clientes_wa (telefono, instagram_psid, instagram_username, nombre, last_interaction) VALUES (?,?,?,?,NOW())',
+    [`ig_${psid}`, psid, username ?? null, nombre ?? username ?? psid]
   )
   return res.insertId
 }
