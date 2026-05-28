@@ -41,18 +41,13 @@ function enCooldown(psid) {
 // ── OpenAI ────────────────────────────────────────────────────────────────────
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-function buildSystemPrompt(esPrimerMensaje = false) {
+function buildSystemPrompt() {
   const inv = inventario.map(p =>
     `- ${p.nombre} | $${Number(p.precio ?? 0).toLocaleString('es-CO')} | ${p.medidas ?? ''} | ${p.material ?? ''} | ${p.subcategoria ?? ''}`
   ).join('\n')
 
-  const saludoInicial = esPrimerMensaje
-    ? `\nPRIMER MENSAJE — el cliente escribe por primera vez. Empieza TU respuesta SIEMPRE con exactamente este saludo (luego responde su mensaje normalmente):\n"¡Hola! 😊 Soy Elena, tu asistente virtual de DeCasa Muebles y Decoración. Es un placer atenderte — cuéntame, ¿en qué te puedo ayudar hoy?"\n`
-    : ''
-
   return `Eres Elena, asesora de ventas de DeCasa en Instagram Direct (@muebles_decasa).
 DeCasa es una tienda colombiana de muebles de madera Flor Morado de alta calidad, con sedes en Armenia y Pereira.
-${saludoInicial}
 
 IDENTIDAD:
 - Horario: Lunes-Viernes 8am-5pm | Sábado 8am-12pm
@@ -229,7 +224,6 @@ const TOOLS = [
 
 async function callGemini(psid, mensajeUsuario, imageBase64 = null) {
   const historial = await db.getHistorial(psid, 12)
-  const esPrimerMensaje = historial.length === 0
 
   // Si hay imagen, el último mensaje del usuario incluye la imagen para visión
   const userContent = imageBase64
@@ -240,7 +234,7 @@ async function callGemini(psid, mensajeUsuario, imageBase64 = null) {
     : mensajeUsuario
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt(esPrimerMensaje) },
+    { role: 'system', content: buildSystemPrompt() },
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
     { role: 'user', content: userContent },
   ]
@@ -599,9 +593,18 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
 
   if (!mensajeAI.trim()) return
 
+  // Detectar primer mensaje ANTES de guardar para que el historial esté vacío
+  const histPrev       = await db.getHistorial(psid, 1)
+  const esPrimerMensaje = histPrev.length === 0
+
   await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
 
   try {
+    // Saludo de bienvenida como mensaje separado antes de la respuesta
+    if (esPrimerMensaje) {
+      await ig.sendTextMessage(psid, '¡Hola! 😊 Soy Elena, tu asistente virtual de DeCasa Muebles y Decoración. Es un placer atenderte 🛋️')
+    }
+
     const respuesta = await callGemini(psid, mensajeAI, imageBase64)
 
     if (respuesta.tipo === 'tool') {
