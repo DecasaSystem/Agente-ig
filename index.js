@@ -46,44 +46,105 @@ function buildSystemPrompt() {
     `- ${p.nombre} | $${Number(p.precio ?? 0).toLocaleString('es-CO')} | ${p.medidas ?? ''} | ${p.material ?? ''} | ${p.subcategoria ?? ''}`
   ).join('\n')
 
-  return `Eres Elena, asistente virtual de DeCasa (@muebles_decasa) en Instagram Direct.
-DeCasa es una tienda colombiana de muebles de alta calidad. Tu objetivo es ayudar a los clientes a encontrar el mueble perfecto, agendar citas y resolver dudas.
+  return `Eres Elena, asesora de ventas de DeCasa en Instagram Direct (@muebles_decasa).
+DeCasa es una tienda colombiana de muebles de madera Flor Morado de alta calidad, con sedes en Armenia y Pereira.
 
-REGLAS:
-- Responde siempre en español, tono amable y profesional
-- Máximo 150 palabras por respuesta (Instagram DM)
-- Si el cliente manda una foto de su cuarto, detecta que quiere ver cómo quedaría un mueble
-- Si no tienes información suficiente, di que un asesor les contactará pronto
-- NO inventes precios ni productos que no estén en el inventario
-- No menciones WhatsApp ni números de teléfono — estamos en Instagram
+IDENTIDAD:
+- Horario: Lunes-Viernes 8am-5pm | Sábado 8am-12pm
+- No menciones WhatsApp ni teléfonos — estamos en Instagram
+
+SEDES:
+1. Av. Bolívar # 16 N 26, Armenia, Quindío
+2. Km 2 vía El Edén, Armenia, Quindío
+3. Km 1 vía Jardines, Armenia, Quindío
+4. CC Unicentro Pereira, Risaralda
+5. Cra. 14 #11-93, Pereira, Risaralda
+
+CATEGORÍAS:
+camas | bases_comedores | sillas_comedor | sillas_auxiliares | sillas_barra
+mesas_centro | mesas_auxiliares | mesas_noche | mesas_tv
+sofas | sofas_modulares | sofas_camas | cajoneros_bifes | escritorios | colchones
+
+INSTRUCCIONES OBLIGATORIAS:
+1. SIEMPRE usa buscar_productos antes de mencionar cualquier producto o precio
+2. NUNCA inventes precios ni productos — solo lo que devuelva buscar_productos
+3. Cuando el cliente mencione presupuesto o "barato/económico" → usa buscar_por_presupuesto
+4. Para fotos → usa enviar_foto (escribe "Te envío la foto 👇" antes de llamarla)
+5. Para agendar → pide nombre, sede (1-5), día, hora, motivo; luego llama agendar_cita
+6. Máximo 150 palabras por respuesta
+
+TÉRMINOS AMBIGUOS — pregunta ANTES de buscar:
+- "sillas" → "¿Buscas sillas de comedor, sillas auxiliares (sala/decoración) o sillas de barra?"
+- "mesas" → "¿Buscas mesa de centro, mesa auxiliar, mesa de noche o mesa para TV?"
+- "sofá/sofas" sin más contexto → "¿Buscas sofá tradicional, modular o sofá cama?"
+No preguntes si el cliente YA especificó el tipo (ej: "sillas de comedor").
+
+CUÁNDO TRANSFERIR (llama solicitar_asesor inmediatamente):
+- Pide financiación, crédito, cuotas o formas de pago
+- Quiere producto a medida, color especial o personalización
+- Pregunta por domicilio, entrega, instalación o garantía
+- Lleva 2+ mensajes con la misma duda sin resolución
+- Expresa frustración
+
+TONO: Amable, profesional, persuasiva. Emojis moderados. Cierra siempre con una pregunta.
 
 INVENTARIO ACTUAL:
-${inv || 'Cargando inventario...'}
-
-SEDES (para agendar citas):
-1. Sede Norte — Calle 100 #15-30
-2. Sede Sur — Carrera 30 #45-20
-3. Sede Centro — Calle 72 #10-15
-4. Sede Occidente — Av. Las Américas #68-50
-5. Sede Online (videollamada)
-
-Cuando el cliente quiera agendar, pide: nombre completo, sede, día (lunes a viernes), hora (8am-5pm) y motivo.`
+${inv || 'Cargando inventario...'}`
 }
 
 const TOOLS = [
   {
-    name: 'buscar_producto',
-    description: 'Busca un producto en el inventario por nombre o descripción',
-    parameters: { type: 'object', properties: { nombre: { type: 'string' } }, required: ['nombre'] },
+    name: 'buscar_productos',
+    description: 'Busca productos en el inventario por nombre, descripción o categoría. Úsalo para cualquier pregunta sobre productos, precios o disponibilidad.',
+    parameters: {
+      type: 'object',
+      properties: {
+        consulta:  { type: 'string', description: 'Texto de búsqueda (ej: "silla comedor", "cama doble")' },
+        categoria: { type: 'string', description: 'Categoría opcional: sillas_comedor, sillas_auxiliares, sillas_barra, mesas_centro, mesas_auxiliares, mesas_noche, mesas_tv, sofas, sofas_modulares, sofas_camas, camas, bases_comedores, cajoneros_bifes, escritorios, colchones' },
+        limite:    { type: 'number', description: 'Máximo resultados (default 5)' },
+      },
+      required: ['consulta'],
+    },
   },
   {
-    name: 'enviar_foto_producto',
-    description: 'Envía la foto de un producto al cliente',
-    parameters: { type: 'object', properties: { nombre: { type: 'string' } }, required: ['nombre'] },
+    name: 'buscar_por_presupuesto',
+    description: 'Busca productos dentro del presupuesto del cliente.',
+    parameters: {
+      type: 'object',
+      properties: {
+        presupuesto_max: { type: 'number', description: 'Presupuesto máximo en pesos (sin puntos ni $, ej: 2000000)' },
+        categoria:       { type: 'string', description: 'Categoría específica (opcional)' },
+      },
+      required: ['presupuesto_max'],
+    },
+  },
+  {
+    name: 'enviar_foto',
+    description: 'Envía la foto de un producto al cliente.',
+    parameters: {
+      type: 'object',
+      properties: { nombre_producto: { type: 'string' } },
+      required: ['nombre_producto'],
+    },
+  },
+  {
+    name: 'agendar_cita',
+    description: 'Guarda una cita de visita. Recopila TODA la info primero.',
+    parameters: {
+      type: 'object',
+      properties: {
+        nombre:    { type: 'string', description: 'Nombre completo del cliente' },
+        ubicacion: { type: 'number', description: 'Número de sede 1-5' },
+        dia:       { type: 'string', description: 'Día de la semana' },
+        hora:      { type: 'string', description: 'Hora en formato HH:MM' },
+        motivo:    { type: 'string', description: 'Motivo de la visita' },
+      },
+      required: ['nombre', 'ubicacion', 'dia', 'hora', 'motivo'],
+    },
   },
   {
     name: 'solicitar_asesor',
-    description: 'Transfiere la conversación a un asesor humano',
+    description: 'Transfiere la conversación a un asesor humano.',
     parameters: {
       type: 'object',
       properties: {
@@ -134,48 +195,72 @@ async function callGemini(psid, mensajeUsuario) {
 
 // ── Herramientas ──────────────────────────────────────────────────────────────
 
-function buscarEnInventario(nombre) {
-  const q = nombre.toLowerCase()
-  return inventario
+function buscarEnInventario(consulta, categoria = null, limite = 5) {
+  const q = consulta.toLowerCase()
+  let base = inventario
+  if (categoria) {
+    const cat = categoria.toLowerCase().replace(/\s+/g, '_')
+    base = inventario.filter(p => (p.subcategoria ?? '').toLowerCase().replace(/\s+/g, '_') === cat)
+  }
+  return base
     .map(p => ({ ...p, score: scoring(p, q) }))
-    .filter(p => p.score > 30)
+    .filter(p => p.score > 20)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
+    .slice(0, Math.min(limite, 10))
 }
 
 function scoring(p, q) {
   const nombre = (p.nombre ?? '').toLowerCase()
   const sub    = (p.subcategoria ?? '').toLowerCase()
   let score = 0
-  if (nombre === q)                   score += 100
-  if (nombre.includes(q))             score += 60
-  if (sub.includes(q))                score += 30
+  if (nombre === q)         score += 100
+  if (nombre.includes(q))   score += 60
+  if (sub.includes(q))      score += 40
   q.split(' ').forEach(w => {
     if (w.length > 2 && nombre.includes(w)) score += 20
+    if (w.length > 2 && sub.includes(w))    score += 10
   })
   return score
+}
+
+function formatProducto(p) {
+  return `*${p.nombre}*\nPrecio: $${Number(p.precio ?? 0).toLocaleString('es-CO')}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'Madera Flor Morado'}`
 }
 
 async function ejecutarTool(psid, nombre, args, userInfo) {
   switch (nombre) {
 
-    case 'buscar_producto': {
-      const resultados = buscarEnInventario(args.nombre)
-      if (!resultados.length) return `No encontré "${args.nombre}" en el inventario. ¿Puedes describir mejor lo que buscas?`
-      return resultados.map(p =>
-        `*${p.nombre}*\nPrecio: $${Number(p.precio ?? 0).toLocaleString('es-CO')}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}`
-      ).join('\n\n')
+    case 'buscar_productos': {
+      const resultados = buscarEnInventario(args.consulta, args.categoria ?? null, args.limite ?? 5)
+      if (!resultados.length) return `No encontré "${args.consulta}" en el inventario. ¿Puedes describir mejor lo que buscas?`
+      return resultados.map(formatProducto).join('\n\n')
     }
 
-    case 'enviar_foto_producto': {
-      const resultado = buscarEnInventario(args.nombre)[0]
+    case 'buscar_por_presupuesto': {
+      let base = inventario.filter(p => Number(p.precio ?? 0) <= args.presupuesto_max)
+      if (args.categoria) {
+        const cat = args.categoria.toLowerCase().replace(/\s+/g, '_')
+        base = base.filter(p => (p.subcategoria ?? '').toLowerCase().replace(/\s+/g, '_') === cat)
+      }
+      const resultados = base.sort((a, b) => Number(b.precio) - Number(a.precio)).slice(0, 5)
+      if (!resultados.length) return `No encontré productos en ese presupuesto. ¿Quieres ver opciones cercanas a tu rango?`
+      return resultados.map(formatProducto).join('\n\n')
+    }
+
+    case 'enviar_foto': {
+      const resultado = buscarEnInventario(args.nombre_producto)[0]
       if (!resultado) return `No encontré ese producto. ¿Puedes darme más detalles?`
       await db.setUltimoProducto(psid, { nombre: resultado.nombre, imagen: resultado.imagen ?? null, ts: Date.now() })
       if (resultado.imagen) {
         await ig.sendImageMessage(psid, resultado.imagen)
-        return `Aquí tienes una foto de *${resultado.nombre}* — precio: $${Number(resultado.precio ?? 0).toLocaleString('es-CO')} 😊`
+        return `Aquí tienes la foto de *${resultado.nombre}* — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')} 😊`
       }
-      return `*${resultado.nombre}* — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')}\nEn este momento no tengo foto disponible, pero puedes verlo en nuestro perfil @muebles_decasa`
+      return `*${resultado.nombre}* — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')}\nNo tengo foto disponible por ahora. Puedes verlo en nuestro perfil @muebles_decasa`
+    }
+
+    case 'agendar_cita': {
+      await enviarNotificacionSistema(psid, userInfo, `Cita: ${args.nombre} — Sede ${args.ubicacion} — ${args.dia} ${args.hora} — ${args.motivo}`, 'cita')
+      return `¡Listo! Cita agendada para *${args.nombre}*:\n📍 Sede ${args.ubicacion} | 📅 ${args.dia} a las ${args.hora}\nMotivo: ${args.motivo}\n\nNuestro equipo confirmará tu visita pronto 😊`
     }
 
     case 'solicitar_asesor': {
