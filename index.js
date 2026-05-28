@@ -315,7 +315,7 @@ function esVisualizacion(texto) {
 
 // ── Manejador principal de mensajes ───────────────────────────────────────────
 
-async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl) {
+async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) {
   if (enCooldown(psid)) return
 
   const userInfo = await ig.getUserInfo(psid)
@@ -323,7 +323,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl) {
   await db.actualizarInteraccion(psid)
   await ig.sendTypingOn(psid)
 
-  // Imagen recibida — posible visualización
+  // Imagen recibida — posible visualización de mueble en cuarto
   if (adjuntos?.length) {
     const imagenes = adjuntos.filter(a => a.type === 'image')
     if (imagenes.length) {
@@ -345,10 +345,34 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl) {
     }
   }
 
-  // Contexto de story reply
   let mensajeAI = texto ?? ''
-  if (esStoryReply && storyUrl) {
-    mensajeAI = `[El cliente respondió a una historia de @muebles_decasa] ${mensajeAI}`
+
+  // Post compartido en DM — extraer caption del attachment
+  if (adjuntos?.length) {
+    const postCompartido = adjuntos.find(a => a.type === 'share')
+    if (postCompartido) {
+      const caption = postCompartido.payload?.title ?? ''
+      const url     = postCompartido.payload?.url ?? ''
+      const ctx     = caption ? `"${caption}"` : url || 'una publicación de DeCasa'
+      mensajeAI = `[El cliente compartió una publicación de @muebles_decasa: ${ctx}] ${mensajeAI || 'Quiero más información sobre esto'}`
+    }
+
+    // Media adjunta (video/reel/imagen desde post)
+    const mediaAdj = adjuntos.find(a => ['video', 'reel', 'ig_reel'].includes(a.type))
+    if (mediaAdj && !mensajeAI.trim()) {
+      mensajeAI = '[El cliente compartió un video/reel de @muebles_decasa] Quiero más información'
+    }
+  }
+
+  // Respuesta a historia — intentar obtener caption de la historia
+  if (esStoryReply) {
+    let storyCtx = ''
+    if (storyId) {
+      const details = await ig.getMediaDetails(storyId)
+      if (details?.caption) storyCtx = ` La historia decía: "${details.caption}".`
+    }
+    const prefijo = `[El cliente respondió a una historia de @muebles_decasa.${storyCtx}]`
+    mensajeAI = `${prefijo} ${mensajeAI || 'Quiero más información'}`
   }
 
   if (!mensajeAI.trim()) return
@@ -410,15 +434,16 @@ app.post('/webhook/instagram', (req, res) => {
       // Ignorar ecos (mensajes propios del bot)
       if (event.message?.is_echo) continue
 
-      const psid      = event.sender?.id
-      const texto     = event.message?.text ?? null
-      const adjuntos  = event.message?.attachments ?? null
+      const psid       = event.sender?.id
+      const texto      = event.message?.text ?? null
+      const adjuntos   = event.message?.attachments ?? null
       const storyReply = !!event.message?.reply_to?.story
       const storyUrl   = event.message?.reply_to?.story?.url ?? null
+      const storyId    = event.message?.reply_to?.story?.id ?? null
 
       if (!psid) continue
 
-      handleMessage(psid, texto, adjuntos, storyReply, storyUrl)
+      handleMessage(psid, texto, adjuntos, storyReply, storyUrl, storyId)
         .catch(e => console.error('[handleMessage] Error no capturado:', e.message))
     }
   }

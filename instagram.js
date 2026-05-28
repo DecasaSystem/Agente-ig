@@ -101,4 +101,20 @@ function splitMessage(texto, maxLen) {
   return chunks.filter(Boolean)
 }
 
-module.exports = { sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo, downloadMediaToBuffer }
+// Obtener caption/detalles de un post o historia por su media ID
+async function getMediaDetails(mediaId) {
+  try {
+    const { data } = await axios.get(`${BASE}/${mediaId}`, {
+      params: {
+        fields:       'caption,media_type,media_url,thumbnail_url',
+        access_token: TOKEN(),
+      },
+    })
+    return data
+  } catch (e) {
+    console.error('[IG] getMediaDetails error:', e.response?.data?.error?.message ?? e.message)
+    return null
+  }
+}
+
+module.exports = { sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo, downloadMediaToBuffer, getMediaDetails }
