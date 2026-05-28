@@ -400,8 +400,9 @@ app.get('/delete-data', (req, res) => {
 
 // ── Inicio ────────────────────────────────────────────────────────────────────
 async function startServer() {
+  await require('./init-db').main()
   await cargarInventario()
-  setInterval(cargarInventario, 30 * 60 * 1000) // refresca inventario cada 30 min
+  setInterval(cargarInventario, 30 * 60 * 1000)
 
   app.listen(PORT, () => {
     console.log(`[server] Instagram Agent corriendo en puerto ${PORT}`)

@@ -33,19 +33,25 @@ async function main() {
     }
   }
 
-  // Agregar instagram_psid a conversaciones si la tabla la maneja el agente local
-  // (Si no existe la tabla, no hacer nada — la maneja decasa-api via migración Laravel)
-  try {
-    await connection.query(
-      `ALTER TABLE conversaciones ADD COLUMN instagram_psid VARCHAR(50) NULL`
+  // Crear tabla conversaciones (historial Instagram) si no existe
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS conversaciones (
+      id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      instagram_psid VARCHAR(50) NOT NULL,
+      role          ENUM('user','assistant') NOT NULL,
+      content       TEXT NOT NULL,
+      created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_psid_created (instagram_psid, created_at)
     )
-    console.log('[init-db] Columna instagram_psid agregada a conversaciones')
-  } catch (e) {
-    if (e.code !== 'ER_DUP_FIELDNAME') console.log('[init-db] conversaciones:', e.message)
-  }
+  `)
+  console.log('[init-db] Tabla conversaciones lista')
 
   await connection.end()
   console.log('[init-db] Listo')
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+if (require.main === module) {
+  main().catch(e => { console.error(e); process.exit(1) })
+}
+
+module.exports = { main }
