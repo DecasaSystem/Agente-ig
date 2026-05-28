@@ -364,6 +364,42 @@ function verificarFirma(req) {
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ ok: true, servicio: 'DeCasa Instagram Agent', inventario: inventario.length }))
 
+// ── Páginas legales requeridas por Meta ───────────────────────────────────────
+app.get('/privacy', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.send(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Política de Privacidad — DeCasa</title>
+  <style>body{font-family:sans-serif;max-width:700px;margin:40px auto;padding:0 20px;line-height:1.6}h1{color:#333}</style></head>
+  <body>
+  <h1>Política de Privacidad — DeCasa Instagram Bot</h1>
+  <p><strong>Última actualización:</strong> mayo 2026</p>
+  <p>Este asistente de Instagram (<strong>Elena</strong>) es operado por <strong>DeCasa</strong>, tienda de muebles con sede en Colombia.</p>
+  <h2>Datos que recopilamos</h2>
+  <ul>
+    <li>Tu nombre e ID de usuario de Instagram (PSID) para gestionar tu conversación.</li>
+    <li>Los mensajes que envías, para responder tus consultas sobre productos.</li>
+    <li>Fotos que compartas voluntariamente para la función de visualización de muebles.</li>
+  </ul>
+  <h2>Uso de los datos</h2>
+  <p>Los datos se usan exclusivamente para responder consultas, agendar citas y mejorar la atención al cliente de DeCasa. No compartimos tu información con terceros.</p>
+  <h2>Retención</h2>
+  <p>El historial de conversación se conserva por 90 días y luego se elimina automáticamente.</p>
+  <h2>Contacto</h2>
+  <p>Para cualquier duda sobre privacidad escríbenos a <a href="mailto:juandavidrestrepobetancur756@gmail.com">juandavidrestrepobetancur756@gmail.com</a></p>
+  </body></html>`)
+})
+
+app.get('/delete-data', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.send(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Eliminación de datos — DeCasa</title>
+  <style>body{font-family:sans-serif;max-width:700px;margin:40px auto;padding:0 20px;line-height:1.6}h1{color:#333}</style></head>
+  <body>
+  <h1>Solicitud de eliminación de datos — DeCasa</h1>
+  <p>Para solicitar la eliminación de tus datos de conversación con el asistente de DeCasa en Instagram, envía un correo a:</p>
+  <p><strong><a href="mailto:juandavidrestrepobetancur756@gmail.com">juandavidrestrepobetancur756@gmail.com</a></strong></p>
+  <p>Indica tu nombre de usuario de Instagram y procesaremos tu solicitud en un plazo de 72 horas.</p>
+  </body></html>`)
+})
+
 // ── Inicio ────────────────────────────────────────────────────────────────────
 async function startServer() {
   await cargarInventario()
