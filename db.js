@@ -13,51 +13,46 @@ const pool = mysql.createPool({
   connectionLimit:    5,
 })
 
+// Prefijo para no colisionar con teléfonos de Agentews
+const igTel = psid => `ig_${psid}`
+
 async function runMigrations() {
-  const migraciones = [
-    `ALTER TABLE clientes_wa ADD COLUMN instagram_psid VARCHAR(50) UNIQUE NULL`,
-    `ALTER TABLE clientes_wa ADD COLUMN instagram_username VARCHAR(100) NULL`,
-    `CREATE TABLE IF NOT EXISTS conversaciones (
-      id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      instagram_psid VARCHAR(50) NOT NULL,
-      role           ENUM('user','assistant') NOT NULL,
-      content        TEXT NOT NULL,
-      created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_psid_created (instagram_psid, created_at)
-    )`,
-  ]
-  for (const sql of migraciones) {
-    try {
-      await pool.query(sql)
-      console.log('[db] migración OK:', sql.substring(0, 55).trim())
-    } catch (e) {
-      if (e.code === 'ER_DUP_FIELDNAME') {
-        console.log('[db] columna ya existe, ok')
-      } else {
-        console.error('[db] migración error:', e.message)
-      }
-    }
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS conversaciones (
+        id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        instagram_psid VARCHAR(50) NOT NULL,
+        role           ENUM('user','assistant') NOT NULL,
+        content        TEXT NOT NULL,
+        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_psid_created (instagram_psid, created_at)
+      )
+    `)
+    console.log('[db] migraciones OK')
+  } catch (e) {
+    console.error('[db] migración error:', e.message)
   }
 }
 
-// ── Clientes (por PSID) ───────────────────────────────────────────────────────
+// ── Clientes ──────────────────────────────────────────────────────────────────
 
 async function getOrCreateClienteByPsid(psid, username, nombre) {
+  const tel = igTel(psid)
   const [rows] = await pool.query(
-    'SELECT id FROM clientes_wa WHERE instagram_psid = ? LIMIT 1', [psid]
+    'SELECT id FROM clientes_wa WHERE telefono = ? LIMIT 1', [tel]
   )
   if (rows.length) return rows[0].id
 
   const [res] = await pool.query(
-    'INSERT INTO clientes_wa (telefono, instagram_psid, instagram_username, nombre, last_interaction) VALUES (?,?,?,?,NOW())',
-    [`ig_${psid}`, psid, username ?? null, nombre ?? username ?? psid]
+    'INSERT INTO clientes_wa (telefono, nombre, last_interaction) VALUES (?,?,NOW())',
+    [tel, nombre ?? username ?? psid]
   )
   return res.insertId
 }
 
 async function actualizarInteraccion(psid) {
   await pool.query(
-    'UPDATE clientes_wa SET last_interaction = NOW() WHERE instagram_psid = ?', [psid]
+    'UPDATE clientes_wa SET last_interaction = NOW() WHERE telefono = ?', [igTel(psid)]
   )
 }
 
@@ -67,8 +62,8 @@ async function getEstado(psid) {
   const [rows] = await pool.query(
     `SELECT eu.* FROM estado_usuario eu
      JOIN clientes_wa c ON c.id = eu.cliente_id
-     WHERE c.instagram_psid = ? LIMIT 1`,
-    [psid]
+     WHERE c.telefono = ? LIMIT 1`,
+    [igTel(psid)]
   )
   return rows[0] ?? null
 }
@@ -159,7 +154,7 @@ async function getInventario() {
 
 async function _clienteId(psid) {
   const [rows] = await pool.query(
-    'SELECT id FROM clientes_wa WHERE instagram_psid = ? LIMIT 1', [psid]
+    'SELECT id FROM clientes_wa WHERE telefono = ? LIMIT 1', [igTel(psid)]
   )
   return rows[0]?.id ?? null
 }
