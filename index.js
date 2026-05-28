@@ -13,6 +13,9 @@ const imgP = require('./image-processor')
 const app  = express()
 const PORT = process.env.PORT ?? 3001
 
+// Set de message IDs ya procesados — evita duplicados que Meta reenvía
+const midsProcesados = new Set()
+
 // ── Raw body para validar firma Meta ─────────────────────────────────────────
 app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf }
@@ -70,7 +73,7 @@ INSTRUCCIONES OBLIGATORIAS:
 2. NUNCA inventes precios ni productos — solo lo que devuelva buscar_productos
 3. Cuando el cliente mencione presupuesto o "barato/económico" → usa buscar_por_presupuesto
 4. Para fotos → usa enviar_foto (escribe "Te envío la foto 👇" antes de llamarla)
-5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida (1=Armenia Bolívar, 2=Armenia El Edén, 3=Armenia Jardines, 4=Unicentro Pereira, 5=Pereira Cra 14), fecha (día y mes), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm), motivo; llama agendar_cita solo cuando tengas TODO
+5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida (1=Armenia Bolívar, 2=Armenia El Edén, 3=Armenia Jardines, 4=Unicentro Pereira, 5=Pereira Cra 14), fecha (día y mes), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto)
 6. Máximo 150 palabras por respuesta
 
 VISIÓN DE IMÁGENES:
@@ -170,9 +173,9 @@ const TOOLS = [
         ubicacion: { type: 'number', description: 'Número de sede 1-5' },
         dia:       { type: 'string', description: 'Fecha de la visita (ej: "martes 3 de junio")' },
         hora:      { type: 'string', description: 'Hora en formato HH:MM (dentro de horario comercial)' },
-        motivo:    { type: 'string', description: 'Motivo de la visita' },
+        motivo:    { type: 'string', description: 'Motivo de la visita (opcional, solo si el cliente lo menciona)' },
       },
-      required: ['nombre', 'ubicacion', 'dia', 'hora', 'motivo'],
+      required: ['nombre', 'ubicacion', 'dia', 'hora'],
     },
   },
   {
@@ -350,14 +353,16 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     case 'agendar_cita': {
       const sedeNombre = SEDE_NOMBRE[args.ubicacion] ?? `Sede ${args.ubicacion}`
       const tiendaId   = SEDE_TIENDA_ID[args.ubicacion] ?? null
-      const datosCita  = { nombre: args.nombre, ubicacion: args.ubicacion, sede_nombre: sedeNombre, dia: args.dia, hora: args.hora, motivo: args.motivo }
+      const motivo     = args.motivo || null
+      const datosCita  = { nombre: args.nombre, ubicacion: args.ubicacion, sede_nombre: sedeNombre, dia: args.dia, hora: args.hora, motivo }
       await enviarNotificacionSistema(
         psid, userInfo,
-        `Cita: ${args.nombre} — ${sedeNombre} — ${args.dia} ${args.hora} — ${args.motivo}`,
+        `Cita: ${args.nombre} — ${sedeNombre} — ${args.dia} ${args.hora}${motivo ? ` — ${motivo}` : ''}`,
         'cita',
         { datos_cita: datosCita, tienda_id: tiendaId }
       )
-      return `¡Listo! Cita agendada para *${args.nombre}*:\n📍 ${sedeNombre} | 📅 ${args.dia} a las ${args.hora}\nMotivo: ${args.motivo}\n\nNuestro equipo confirmará tu visita pronto 😊`
+      const lineaMotivo = motivo ? `\nMotivo: ${motivo}` : ''
+      return `¡Listo! Tu cita quedó agendada ✅\n\n👤 *${args.nombre}*\n📍 ${sedeNombre}\n📅 ${args.dia} a las ${args.hora}${lineaMotivo}\n\nNuestro equipo te confirmará la visita pronto 😊\n\n¿Hay algo más en lo que pueda ayudarte?`
     }
 
     case 'solicitar_asesor': {
@@ -667,6 +672,14 @@ app.post('/webhook/instagram', (req, res) => {
       const storyId    = event.message?.reply_to?.story?.id ?? null
 
       if (!psid) continue
+
+      // Deduplicar: Meta a veces reenvía el mismo evento varias veces
+      const mid = event.message?.mid
+      if (mid) {
+        if (midsProcesados.has(mid)) { console.log(`[webhook] mid duplicado ignorado: ${mid}`); continue }
+        midsProcesados.add(mid)
+        setTimeout(() => midsProcesados.delete(mid), 5 * 60 * 1000)
+      }
 
       handleMessage(psid, texto, adjuntos, storyReply, storyUrl, storyId)
         .catch(e => console.error('[handleMessage] Error no capturado:', e.message))
