@@ -372,25 +372,13 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   let mensajeAI = texto ?? ''
   let imageBase64 = null  // imagen para visión de la IA
 
-  // Post compartido en DM — buscar producto + intentar obtener imagen del post
+  // Post compartido en DM (type: ig_post) — buscar producto + descargar imagen
   if (adjuntos?.length) {
-    const postCompartido = adjuntos.find(a => a.type === 'share')
+    const postCompartido = adjuntos.find(a => a.type === 'ig_post' || a.type === 'share')
     if (postCompartido) {
-      console.log('[post] payload:', JSON.stringify(postCompartido.payload ?? {}))
-
       const caption  = postCompartido.payload?.title ?? ''
-      const mediaId  = postCompartido.payload?.id
-        ?? postCompartido.payload?.media_id
-        ?? postCompartido.payload?.media?.id
-        ?? null
-      const mediaUrl = postCompartido.payload?.media?.image?.src
-        ?? postCompartido.payload?.image_data?.url
-        ?? postCompartido.payload?.media_url
-        ?? null
+      const urlImagen = postCompartido.payload?.url ?? null  // CDN URL directa
 
-      // Intentar descargar imagen del post para visión
-      const urlImagen = mediaUrl ?? (mediaId ? (await ig.getMediaDetails(mediaId))?.media_url : null)
-      console.log(`[post] mediaId=${mediaId} urlImagen=${urlImagen ?? 'none'}`)
       if (urlImagen) {
         try {
           const { buffer } = await ig.downloadMediaToBuffer(urlImagen)
@@ -511,9 +499,6 @@ app.post('/webhook/instagram', (req, res) => {
       const storyReply = !!event.message?.reply_to?.story
       const storyUrl   = event.message?.reply_to?.story?.url ?? null
       const storyId    = event.message?.reply_to?.story?.id ?? null
-
-      // Log para debug de estructura de mensaje
-      console.log(`[msg] psid=${psid} texto=${texto ?? 'null'} adjuntos=${adjuntos ? JSON.stringify(adjuntos) : 'null'}`)
 
       if (!psid) continue
 
