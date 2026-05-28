@@ -132,6 +132,14 @@ async function guardarMensaje(psid, role, content) {
   )
 }
 
+async function limpiarHistorialAntiguo(dias = 90) {
+  const [res] = await pool.query(
+    'DELETE FROM ig_conversaciones WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)',
+    [dias]
+  )
+  console.log(`[db] limpieza historial: ${res.affectedRows} registros eliminados (>${dias} días)`)
+}
+
 // ── Inventario ────────────────────────────────────────────────────────────────
 
 async function getInventario() {
@@ -170,5 +178,6 @@ module.exports = {
   limpiarEstado,
   getHistorial,
   guardarMensaje,
+  limpiarHistorialAntiguo,
   getInventario,
 }

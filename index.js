@@ -758,6 +758,12 @@ async function startServer() {
   await cargarInventario()
   setInterval(cargarInventario, 30 * 60 * 1000)
 
+  // Limpiar historial antiguo al arrancar y luego cada 24 horas
+  db.limpiarHistorialAntiguo(90).catch(e => console.error('[db] limpieza error:', e.message))
+  setInterval(() => {
+    db.limpiarHistorialAntiguo(90).catch(e => console.error('[db] limpieza error:', e.message))
+  }, 24 * 60 * 60 * 1000)
+
   app.listen(PORT, () => {
     console.log(`[server] Instagram Agent corriendo en puerto ${PORT}`)
   })
