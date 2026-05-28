@@ -348,8 +348,16 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'agendar_cita': {
-      await enviarNotificacionSistema(psid, userInfo, `Cita: ${args.nombre} — Sede ${args.ubicacion} — ${args.dia} ${args.hora} — ${args.motivo}`, 'cita')
-      return `¡Listo! Cita agendada para *${args.nombre}*:\n📍 Sede ${args.ubicacion} | 📅 ${args.dia} a las ${args.hora}\nMotivo: ${args.motivo}\n\nNuestro equipo confirmará tu visita pronto 😊`
+      const sedeNombre = SEDE_NOMBRE[args.ubicacion] ?? `Sede ${args.ubicacion}`
+      const tiendaId   = SEDE_TIENDA_ID[args.ubicacion] ?? null
+      const datosCita  = { nombre: args.nombre, ubicacion: args.ubicacion, sede_nombre: sedeNombre, dia: args.dia, hora: args.hora, motivo: args.motivo }
+      await enviarNotificacionSistema(
+        psid, userInfo,
+        `Cita: ${args.nombre} — ${sedeNombre} — ${args.dia} ${args.hora} — ${args.motivo}`,
+        'cita',
+        { datos_cita: datosCita, tienda_id: tiendaId }
+      )
+      return `¡Listo! Cita agendada para *${args.nombre}*:\n📍 ${sedeNombre} | 📅 ${args.dia} a las ${args.hora}\nMotivo: ${args.motivo}\n\nNuestro equipo confirmará tu visita pronto 😊`
     }
 
     case 'solicitar_asesor': {
@@ -398,7 +406,12 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const resumen = carrito.map((i, idx) =>
         `${idx + 1}. ${i.producto} × ${i.cantidad || 1} — $${parsearPrecio(i.precio).toLocaleString('es-CO')}`
       ).join('\n')
-      await enviarNotificacionSistema(psid, userInfo, `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`, 'pedido')
+      await enviarNotificacionSistema(
+        psid, userInfo,
+        `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`,
+        'pedido',
+        { carrito }
+      )
       await setCarrito(psid, [])
       return `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
     }
@@ -410,7 +423,17 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
 
 // ── Notificación al sistema de ventas ─────────────────────────────────────────
 
-async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor') {
+// Mapeo sede (1-5) → tienda_id en la BD (mismo orden que el seeder)
+const SEDE_TIENDA_ID = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+const SEDE_NOMBRE    = {
+  1: 'Decasa Bolívar (Armenia)',
+  2: 'Decasa Vía El Edén (Armenia)',
+  3: 'Decasa Vía Jardines (Armenia)',
+  4: 'Decasa Unicentro Pereira',
+  5: 'Decasa Risaralda (Pereira)',
+}
+
+async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor', extra = {}) {
   const apiUrl   = process.env.DECASA_API_URL
   const apiToken = process.env.DECASA_AGENT_TOKEN
   if (!apiUrl) { console.warn('[redes] DECASA_API_URL no configurado'); return }
@@ -439,6 +462,9 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
       whatsapp_url:   contactoUrl,
       fuente:         'instagram',
       contacto_url:   contactoUrl,
+      ...(extra.carrito    && { carrito:    extra.carrito }),
+      ...(extra.datos_cita && { datos_cita: extra.datos_cita }),
+      ...(extra.tienda_id  && { tienda_id:  extra.tienda_id }),
     }
     const config = {
       headers: { 'Content-Type': 'application/json', 'X-Agent-Token': apiToken ?? '' },
