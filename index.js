@@ -415,26 +415,36 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
   const apiToken = process.env.DECASA_AGENT_TOKEN
   if (!apiUrl) { console.warn('[redes] DECASA_API_URL no configurado'); return }
 
+  const titulos = {
+    asesor:          'Solicitud de asesor (Instagram)',
+    pedido:          'Nuevo pedido confirmado (Instagram)',
+    cita:            'Nueva cita agendada (Instagram)',
+    personalizacion: 'Solicitud de personalización (Instagram)',
+  }
+
+  const username    = userInfo?.username ?? psid
+  // La API usa whatsapp_url para el botón de contacto en Telegram — usamos el link de Instagram DM
+  const contactoUrl = userInfo?.username ? `https://ig.me/m/${userInfo.username}` : `https://ig.me/direct/t/${psid}`
+  const resumenFinal = `${titulos[tipo] ?? 'Notificación Instagram'}\n${resumen ?? ''}`
+
   try {
     const historial = await db.getHistorial(psid, 6)
-    const username  = userInfo?.username ?? psid
-    const contactoUrl = userInfo?.username
-      ? `https://ig.me/m/${userInfo.username}`
-      : null
 
     const payload = {
       tipo,
-      telefono:       psid,
+      telefono:       `ig_${psid}`,
       nombre_cliente: userInfo?.nombre ?? username,
-      resumen,
-      historial:      historial.map(m => ({ role: m.role, content: m.content })),
-      whatsapp_url:   null,
+      resumen:        resumenFinal,
+      historial:      historial.slice(-8).map(m => ({ role: m.role, content: String(m.content).substring(0, 150) })),
+      whatsapp_url:   contactoUrl,
       fuente:         'instagram',
       contacto_url:   contactoUrl,
     }
-    const config = { headers: { 'X-Agent-Token': apiToken ?? '' }, timeout: 15000 }
+    const config = {
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Token': apiToken ?? '' },
+      timeout: 15000,
+    }
 
-    // Retry una vez si hay 429 (Render free tier sleeping)
     try {
       await axios.post(`${apiUrl}/api/redes/webhook`, payload, config)
     } catch (e) {
