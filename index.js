@@ -85,6 +85,13 @@ TÉRMINOS AMBIGUOS — pregunta ANTES de buscar:
 - "sofá/sofas" sin más contexto → "¿Buscas sofá tradicional, modular o sofá cama?"
 No preguntes si el cliente YA especificó el tipo (ej: "sillas de comedor").
 
+CARRITO Y COMPRAS:
+8. Cuando el cliente confirme querer comprar un producto → llama agregar_al_carrito (con nombre exacto y precio)
+9. Para ver carrito → llama ver_carrito
+10. Para quitar un producto → llama quitar_del_carrito
+11. Para finalizar la compra → llama confirmar_pedido (solo cuando el cliente confirme explícitamente)
+NUNCA llames solicitar_asesor cuando el cliente quiera comprar — usa siempre el flujo de carrito
+
 CUÁNDO TRANSFERIR (llama solicitar_asesor inmediatamente):
 - Pide financiación, crédito, cuotas o formas de pago
 - Quiere producto a medida, color especial o personalización
@@ -178,6 +185,39 @@ const TOOLS = [
       required: ['motivo', 'tipo'],
     },
   },
+  {
+    name: 'ver_carrito',
+    description: 'Muestra los productos en el carrito del cliente con precios y total.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'agregar_al_carrito',
+    description: 'Agrega un producto al carrito. SOLO cuando el cliente confirme explícitamente que quiere comprar ese producto.',
+    parameters: {
+      type: 'object',
+      properties: {
+        producto: { type: 'string', description: 'Nombre exacto del producto' },
+        precio:   { type: 'string', description: 'Precio como texto (ej: "$3.000.000")' },
+        cantidad: { type: 'number', description: 'Cantidad (default 1)' },
+      },
+      required: ['producto', 'precio'],
+    },
+  },
+  {
+    name: 'quitar_del_carrito',
+    description: 'Quita un producto del carrito o vacía todo el carrito.',
+    parameters: {
+      type: 'object',
+      properties: {
+        producto: { type: 'string', description: 'Nombre (parcial) del producto a quitar. Omitir para vaciar todo.' },
+      },
+    },
+  },
+  {
+    name: 'confirmar_pedido',
+    description: 'Confirma la compra de todos los productos en el carrito. Solo cuando el cliente diga explícitamente que quiere finalizar la compra.',
+    parameters: { type: 'object', properties: {} },
+  },
 ]
 
 async function callGemini(psid, mensajeUsuario, imageBase64 = null) {
@@ -259,6 +299,21 @@ function formatProducto(p) {
   return `*${p.nombre}*\nPrecio: $${Number(p.precio ?? 0).toLocaleString('es-CO')}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'Madera Flor Morado'}`
 }
 
+function parsearPrecio(p) {
+  if (typeof p === 'number') return p
+  return parseInt(String(p).replace(/[^0-9]/g, '')) || 0
+}
+
+async function getCarrito(psid) {
+  const estado = await db.getEstado(psid)
+  if (!estado?.carrito) return []
+  try { return JSON.parse(estado.carrito) } catch { return [] }
+}
+
+async function setCarrito(psid, carrito) {
+  await db.setEstado(psid, { carrito: JSON.stringify(carrito) })
+}
+
 async function ejecutarTool(psid, nombre, args, userInfo) {
   switch (nombre) {
 
@@ -298,6 +353,52 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     case 'solicitar_asesor': {
       await enviarNotificacionSistema(psid, userInfo, args.motivo, args.tipo)
       return `Entendido, voy a conectarte con uno de nuestros asesores. Estarán contigo en breve 😊`
+    }
+
+    case 'ver_carrito': {
+      const items = await getCarrito(psid)
+      if (!items.length) return 'Tu carrito está vacío 🛒 ¿Te gustaría ver algún producto? 😊'
+      const total = items.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
+      const lista = items.map((i, idx) =>
+        `${idx + 1}. *${i.producto}* — $${parsearPrecio(i.precio).toLocaleString('es-CO')} × ${i.cantidad || 1}`
+      ).join('\n')
+      return `🛍️ *Tu carrito:*\n${lista}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\n¿Confirmamos la compra o quieres seguir viendo productos?`
+    }
+
+    case 'agregar_al_carrito': {
+      const carrito = await getCarrito(psid)
+      if (carrito.length >= 10) return 'Tu carrito está lleno (máximo 10 productos). Confirma la compra o elimina algo primero.'
+      const ya = carrito.find(i => i.producto.toLowerCase() === (args.producto ?? '').toLowerCase())
+      if (ya) return `*${args.producto}* ya está en tu carrito 😊 ¿Quieres confirmar la compra o agregar algo más?`
+      carrito.push({ producto: args.producto, precio: args.precio, cantidad: args.cantidad ?? 1 })
+      await setCarrito(psid, carrito)
+      const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
+      return `¡Listo! 🛍️ *${args.producto}* agregado al carrito.\nTotal: *$${total.toLocaleString('es-CO')}* (${carrito.length} producto${carrito.length > 1 ? 's' : ''})\n\n¿Agregamos algo más o confirmamos el pedido?`
+    }
+
+    case 'quitar_del_carrito': {
+      const carrito = await getCarrito(psid)
+      if (!args.producto) {
+        await setCarrito(psid, [])
+        return 'Carrito vaciado 🗑️ ¿Te puedo ayudar a buscar algo? 😊'
+      }
+      const busqueda = args.producto.toLowerCase().substring(0, 15)
+      const filtrado = carrito.filter(i => !i.producto.toLowerCase().includes(busqueda))
+      if (filtrado.length === carrito.length) return `No encontré *${args.producto}* en tu carrito. Escribe "ver carrito" para ver lo que tienes 😊`
+      await setCarrito(psid, filtrado)
+      return `Listo, eliminé *${args.producto}* del carrito. ${filtrado.length ? `Te quedan ${filtrado.length} producto(s).` : 'Tu carrito está vacío ahora.'} ¿Puedo ayudarte con algo más?`
+    }
+
+    case 'confirmar_pedido': {
+      const carrito = await getCarrito(psid)
+      if (!carrito.length) return 'Tu carrito está vacío 🛒 Agrega productos primero 😊'
+      const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
+      const resumen = carrito.map((i, idx) =>
+        `${idx + 1}. ${i.producto} × ${i.cantidad || 1} — $${parsearPrecio(i.precio).toLocaleString('es-CO')}`
+      ).join('\n')
+      await enviarNotificacionSistema(psid, userInfo, `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`, 'pedido')
+      await setCarrito(psid, [])
+      return `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
     }
 
     default:
