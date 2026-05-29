@@ -32,6 +32,23 @@ async function cargarInventario() {
   }
 }
 
+// ── Catálogos PDF desde tabla configuracion ───────────────────────────────────
+let catalogosDB = {}
+async function cargarCatalogos() {
+  try {
+    const [rows] = await db.pool.query(
+      "SELECT clave, valor FROM configuracion WHERE clave LIKE 'catalogo_%'"
+    )
+    catalogosDB = {}
+    for (const { clave, valor } of rows) {
+      catalogosDB[clave.replace('catalogo_', '')] = valor
+    }
+    console.log(`[catalogos] ${Object.keys(catalogosDB).length} catálogos cargados`)
+  } catch (e) {
+    console.error('[catalogos] Error cargando:', e.message)
+  }
+}
+
 // ── Rate limiting por PSID ────────────────────────────────────────────────────
 const cooldowns = new Map()
 function enCooldown(psid) {
@@ -73,6 +90,7 @@ INSTRUCCIONES OBLIGATORIAS:
 2. NUNCA inventes precios ni productos — solo lo que devuelva buscar_productos
 3. Cuando el cliente mencione presupuesto o "barato/económico" → usa buscar_por_presupuesto
 4. Para fotos → usa enviar_foto (escribe "Te envío la foto 👇" antes de llamarla)
+4b. Para catálogos → usa enviar_catalogo cuando el cliente pida ver el catálogo de una categoría o quiera explorar todas las opciones
 5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida, fecha (día y mes), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto). Al pedir la sede SIEMPRE lista las opciones así:
 "¿Cuál sede prefieres?
 1️⃣ Armenia — Av. Bolívar
@@ -229,6 +247,20 @@ const TOOLS = [
     description: 'Confirma la compra de todos los productos en el carrito. Solo cuando el cliente diga explícitamente que quiere finalizar la compra.',
     parameters: { type: 'object', properties: {} },
   },
+  {
+    name: 'enviar_catalogo',
+    description: 'Envía el catálogo PDF de una categoría cuando el cliente pida ver el catálogo o quiera explorar todas las opciones de una categoría.',
+    parameters: {
+      type: 'object',
+      properties: {
+        categoria: {
+          type: 'string',
+          description: 'Categoría del catálogo. Valores posibles: sofas, camas, bases_comedores, mesas_auxiliares, mesas_centro, mesas_noche, mesas_tv, sillas_auxiliares, sillas_barra, sofas_camas, sofas_modulares, cajoneros_bifes',
+        },
+      },
+      required: ['categoria'],
+    },
+  },
 ]
 
 async function callGemini(psid, mensajeUsuario, imageBase64 = null) {
@@ -369,6 +401,18 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       )
       const lineaMotivo = motivo ? `\nMotivo: ${motivo}` : ''
       return `¡Listo! Tu cita quedó agendada ✅\n\n👤 *${args.nombre}*\n📍 ${sedeNombre}\n📅 ${args.dia} a las ${args.hora}${lineaMotivo}\n\nNuestro equipo te confirmará la visita pronto 😊\n\n¿Hay algo más en lo que pueda ayudarte?`
+    }
+
+    case 'enviar_catalogo': {
+      const cat = (args.categoria ?? '').toLowerCase().replace(/\s+/g, '_')
+      let url = catalogosDB[cat]
+      if (!url) {
+        const entrada = Object.entries(catalogosDB).find(([k]) => k.includes(cat) || cat.includes(k))
+        url = entrada?.[1]
+      }
+      if (!url) return `No tengo catálogo disponible para esa categoría en este momento. Puedo mostrarte productos específicos si me dices qué buscas 😊`
+      await ig.sendTextMessage(psid, `Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:\n${url}`)
+      return `Te acabo de enviar el catálogo. ¿Hay algún modelo que te haya llamado la atención? 😊`
     }
 
     case 'solicitar_asesor': {
@@ -764,7 +808,9 @@ app.get('/delete-data', (req, res) => {
 async function startServer() {
   await db.runMigrations()
   await cargarInventario()
+  await cargarCatalogos()
   setInterval(cargarInventario, 30 * 60 * 1000)
+  setInterval(cargarCatalogos, 30 * 60 * 1000)
 
   // Limpiar historial antiguo al arrancar y luego cada 24 horas
   db.limpiarHistorialAntiguo(90).catch(e => console.error('[db] limpieza error:', e.message))
