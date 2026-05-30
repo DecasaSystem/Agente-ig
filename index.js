@@ -1,4 +1,4 @@
-'use strict'
+﻿'use strict'
 require('dotenv').config()
 
 const express    = require('express')
@@ -261,10 +261,9 @@ const TOOLS = [
   },
 ]
 
-async function callGemini(psid, mensajeUsuario, imageBase64 = null) {
+async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}) {
   const historial = await db.getHistorial(psid, 12)
 
-  // Si hay imagen, el último mensaje del usuario incluye la imagen para visión
   const userContent = imageBase64
     ? [
         { type: 'text', text: mensajeUsuario },
@@ -283,55 +282,97 @@ async function callGemini(psid, mensajeUsuario, imageBase64 = null) {
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }))
 
-  const response = await openai.chat.completions.create({
-    model:       process.env.OPENAI_MODEL ?? 'gpt-4o',
-    messages,
-    tools,
-    tool_choice: 'auto',
-    temperature: 0.8,
-    max_tokens:  500,
-  })
+  for (let round = 0; round < 5; round++) {
+    const response = await openai.chat.completions.create({
+      model:       process.env.OPENAI_MODEL ?? 'gpt-4o',
+      messages,
+      tools,
+      tool_choice: 'auto',
+      temperature: 0.8,
+      max_tokens:  600,
+    })
 
-  const choice = response.choices[0]
+    const choice = response.choices[0]
 
-  if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls?.length) {
-    const call = choice.message.tool_calls[0]
-    return {
-      tipo:   'tool',
-      nombre: call.function.name,
-      args:   JSON.parse(call.function.arguments),
+    if (choice.finish_reason !== 'tool_calls' || !choice.message.tool_calls?.length) {
+      return choice.message.content ?? ''
+    }
+
+    messages.push(choice.message)
+
+    for (const toolCall of choice.message.tool_calls) {
+      const nombre = toolCall.function.name
+      const args   = JSON.parse(toolCall.function.arguments)
+      const result = await ejecutarTool(psid, nombre, args, userInfo)
+      messages.push({
+        role:         'tool',
+        tool_call_id: toolCall.id,
+        content:      String(result ?? 'OK'),
+      })
     }
   }
 
-  return { tipo: 'texto', texto: choice.message.content ?? '' }
+  return 'Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏'
 }
 
 // ── Herramientas ──────────────────────────────────────────────────────────────
 
+function normalize(str) {
+  return (str ?? '').toLowerCase()
+    .replace(/[aáàäâ]/g, 'a').replace(/[eéèëê]/g, 'e')
+    .replace(/[iíìïî]/g, 'i').replace(/[oóòöô]/g, 'o')
+    .replace(/[uúùüû]/g, 'u').replace(/[ñ]/g, 'n')
+    .trim()
+}
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i])
+  for (let j = 1; j <= n; j++) dp[0][j] = j
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+    }
+  }
+  return dp[m][n]
+}
+
+function fuzzyWord(word, targetWords) {
+  const maxDist = word.length <= 5 ? 1 : 2
+  return targetWords.some(w => w.length > 2 && levenshtein(word, w) <= maxDist)
+}
+
 function buscarEnInventario(consulta, categoria = null, limite = 5) {
-  const q = consulta.toLowerCase()
+  const q = normalize(consulta)
   let base = inventario
   if (categoria) {
-    const cat = categoria.toLowerCase().replace(/\s+/g, '_')
-    base = inventario.filter(p => (p.subcategoria ?? '').toLowerCase().replace(/\s+/g, '_') === cat)
+    const cat = normalize(categoria).replace(/\s+/g, '_')
+    base = inventario.filter(p => normalize(p.subcategoria).replace(/\s+/g, '_') === cat)
   }
   return base
     .map(p => ({ ...p, score: scoring(p, q) }))
-    .filter(p => p.score > 20)
+    .filter(p => p.score >= 10)
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.min(limite, 10))
 }
 
 function scoring(p, q) {
-  const nombre = (p.nombre ?? '').toLowerCase()
-  const sub    = (p.subcategoria ?? '').toLowerCase()
+  const nombre      = normalize(p.nombre)
+  const sub         = normalize(p.subcategoria)
+  const nombreWords = nombre.split(/\s+/)
+  const subWords    = sub.split(/\s+/)
   let score = 0
-  if (nombre === q)         score += 100
-  if (nombre.includes(q))   score += 60
-  if (sub.includes(q))      score += 40
-  q.split(' ').forEach(w => {
-    if (w.length > 2 && nombre.includes(w)) score += 20
-    if (w.length > 2 && sub.includes(w))    score += 10
+  if (nombre === q)       score += 100
+  if (nombre.includes(q)) score += 60
+  if (sub.includes(q))    score += 40
+  q.split(/\s+/).forEach(w => {
+    if (w.length <= 2) return
+    if (nombreWords.includes(w))        score += 20
+    else if (fuzzyWord(w, nombreWords)) score += 12
+    if (subWords.includes(w))           score += 10
+    else if (fuzzyWord(w, subWords))    score += 6
   })
   return score
 }
@@ -661,22 +702,14 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
 
   try {
-    // Saludo de bienvenida como mensaje separado antes de la respuesta
     if (esPrimerMensaje) {
       await ig.sendTextMessage(psid, '¡Hola! 😊 Soy Elena, tu asistente virtual de DeCasa Muebles y Decoración. Es un placer atenderte 🛋️')
     }
 
-    const respuesta = await callGemini(psid, mensajeAI, imageBase64)
-
-    if (respuesta.tipo === 'tool') {
-      const toolResult = await ejecutarTool(psid, respuesta.nombre, respuesta.args, userInfo)
-      if (toolResult) {
-        await ig.sendTextMessage(psid, toolResult)
-        await db.guardarMensaje(psid, 'assistant', toolResult)
-      }
-    } else {
-      await ig.sendTextMessage(psid, respuesta.texto)
-      await db.guardarMensaje(psid, 'assistant', respuesta.texto)
+    const texto = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo)
+    if (texto) {
+      await ig.sendTextMessage(psid, texto)
+      await db.guardarMensaje(psid, 'assistant', texto)
     }
   } catch (e) {
     console.error('[AI] Error:', e.message)
