@@ -519,14 +519,14 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const resumen = carrito.map((i, idx) =>
         `${idx + 1}. ${i.producto} × ${i.cantidad || 1} — $${parsearPrecio(i.precio).toLocaleString('es-CO')}`
       ).join('\n')
-      await enviarNotificacionSistema(
+      // Fire-and-forget: no bloquear el flujo esperando la notificación (puede tardar 56s en retry)
+      enviarNotificacionSistema(
         psid, userInfo,
         `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`,
         'pedido',
         { carrito }
-      )
+      ).catch(e => console.error('[redes] Error notificación pedido IG:', e.message))
       await setCarrito(psid, [])
-      // Enviar mensaje de confirmación directamente (no pasar por IA para garantizar el texto exacto)
       await ig.sendTextMessage(psid,
         `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
       )
