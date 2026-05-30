@@ -471,6 +471,13 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const lista = items.map((i, idx) =>
         `${idx + 1}. *${i.producto}* — $${parsearPrecio(i.precio).toLocaleString('es-CO')} × ${i.cantidad || 1}`
       ).join('\n')
+      // Notificar al sistema de ventas cuando hay carrito activo (cliente listo para decidir)
+      enviarNotificacionSistema(
+        psid, userInfo,
+        `Carrito activo:\n${lista}\nTotal: $${total.toLocaleString('es-CO')}`,
+        'asesor',
+        { carrito: items }
+      ).catch(() => {})
       return `🛍️ *Tu carrito:*\n${lista}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\n¿Confirmamos la compra o quieres seguir viendo productos?`
     }
 
@@ -574,15 +581,18 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
     }
     const config = {
       headers: { 'Content-Type': 'application/json', 'X-Agent-Token': apiToken ?? '' },
-      timeout: 15000,
+      timeout: 25000,
     }
 
+    const intentar = () => axios.post(`${apiUrl}/api/redes/webhook`, payload, config)
     try {
-      await axios.post(`${apiUrl}/api/redes/webhook`, payload, config)
+      await intentar()
     } catch (e) {
-      if (e.response?.status === 429 || e.response?.status === 503) {
-        await new Promise(r => setTimeout(r, 5000))
-        await axios.post(`${apiUrl}/api/redes/webhook`, payload, config)
+      const reintentable = e.response?.status === 429 || e.response?.status === 503
+        || e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT' || !e.response
+      if (reintentable) {
+        await new Promise(r => setTimeout(r, 6000))
+        await intentar()
       } else {
         throw e
       }
