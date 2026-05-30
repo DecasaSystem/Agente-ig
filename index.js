@@ -526,7 +526,11 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         { carrito }
       )
       await setCarrito(psid, [])
-      return `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
+      // Enviar mensaje de confirmación directamente (no pasar por IA para garantizar el texto exacto)
+      await ig.sendTextMessage(psid,
+        `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
+      )
+      return `[Confirmación de pedido enviada al cliente con el resumen completo. Solo despídete con una frase corta, sin repetir el resumen.]`
     }
 
     default:
