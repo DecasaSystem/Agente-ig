@@ -36,9 +36,7 @@ async function cargarInventario() {
 let catalogosDB = {}
 async function cargarCatalogos() {
   try {
-    const [rows] = await db.pool.query(
-      "SELECT clave, valor FROM configuracion WHERE clave LIKE 'catalogo_%'"
-    )
+    const rows = await db.getCatalogos()
     catalogosDB = {}
     for (const { clave, valor } of rows) {
       catalogosDB[clave.replace('catalogo_', '')] = valor

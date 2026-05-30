@@ -140,6 +140,15 @@ async function limpiarHistorialAntiguo(dias = 90) {
   console.log(`[db] limpieza historial: ${res.affectedRows} registros eliminados (>${dias} días)`)
 }
 
+// ── Configuración / Catálogos ─────────────────────────────────────────────────
+
+async function getCatalogos() {
+  const [rows] = await pool.query(
+    "SELECT clave, valor FROM configuracion WHERE clave LIKE 'catalogo_%'"
+  )
+  return rows
+}
+
 // ── Inventario ────────────────────────────────────────────────────────────────
 
 async function getInventario() {
@@ -180,4 +189,5 @@ module.exports = {
   guardarMensaje,
   limpiarHistorialAntiguo,
   getInventario,
+  getCatalogos,
 }
