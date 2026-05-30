@@ -96,7 +96,7 @@ INSTRUCCIONES OBLIGATORIAS:
 3️⃣ Armenia — Vía Jardines
 4️⃣ Unicentro Pereira
 5️⃣ Pereira — Cra. 14"
-6. Máximo 150 palabras por respuesta
+6. Máximo 160 palabras por respuesta
 
 VISIÓN DE IMÁGENES:
 - Puedes ver imágenes cuando el cliente las comparte
@@ -283,6 +283,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   }))
 
   for (let round = 0; round < 5; round++) {
+    if (round > 0) await ig.sendTypingOn(psid)
     const response = await openai.chat.completions.create({
       model:       process.env.OPENAI_MODEL ?? 'gpt-4o',
       messages,
@@ -302,7 +303,8 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
 
     for (const toolCall of choice.message.tool_calls) {
       const nombre = toolCall.function.name
-      const args   = JSON.parse(toolCall.function.arguments)
+      let args
+      try { args = JSON.parse(toolCall.function.arguments) } catch { args = {} }
       const result = await ejecutarTool(psid, nombre, args, userInfo)
       messages.push({
         role:         'tool',
@@ -408,8 +410,8 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     case 'buscar_por_presupuesto': {
       let base = inventario.filter(p => Number(p.precio ?? 0) <= args.presupuesto_max)
       if (args.categoria) {
-        const cat = args.categoria.toLowerCase().replace(/\s+/g, '_')
-        base = base.filter(p => (p.subcategoria ?? '').toLowerCase().replace(/\s+/g, '_') === cat)
+        const cat = normalize(args.categoria).replace(/\s+/g, '_')
+        base = base.filter(p => normalize(p.subcategoria).replace(/\s+/g, '_') === cat)
       }
       const resultados = base.sort((a, b) => Number(b.precio) - Number(a.precio)).slice(0, 5)
       if (!resultados.length) return `No encontré productos en ese presupuesto. ¿Quieres ver opciones cercanas a tu rango?`
@@ -422,9 +424,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       await db.setUltimoProducto(psid, { nombre: resultado.nombre, imagen: resultado.imagen ?? null, ts: Date.now() })
       if (resultado.imagen) {
         await ig.sendImageMessage(psid, resultado.imagen)
-        return `Aquí tienes la foto de *${resultado.nombre}* — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')} 😊`
+        return `[Foto de ${resultado.nombre} enviada — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')}. Haz seguimiento de venta]`
       }
-      return `*${resultado.nombre}* — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')}\nNo tengo foto disponible por ahora. Puedes verlo en nuestro perfil @muebles_decasa`
+      return `[${resultado.nombre} — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')} — sin foto disponible. Sugiere al cliente visitar el perfil @muebles_decasa]`
     }
 
     case 'agendar_cita': {
@@ -443,15 +445,17 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'enviar_catalogo': {
-      const cat = (args.categoria ?? '').toLowerCase().replace(/\s+/g, '_')
+      const cat = normalize(args.categoria ?? '').replace(/\s+/g, '_')
       let url = catalogosDB[cat]
       if (!url) {
-        const entrada = Object.entries(catalogosDB).find(([k]) => k.includes(cat) || cat.includes(k))
+        // Buscar primero coincidencia exacta de prefijo, luego substring
+        const entrada = Object.entries(catalogosDB).find(([k]) => k === cat)
+          ?? Object.entries(catalogosDB).find(([k]) => k.startsWith(cat) || cat.startsWith(k))
         url = entrada?.[1]
       }
       if (!url) return `No tengo catálogo disponible para esa categoría en este momento. Puedo mostrarte productos específicos si me dices qué buscas 😊`
       await ig.sendTextMessage(psid, `Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:\n${url}`)
-      return `Te acabo de enviar el catálogo. ¿Hay algún modelo que te haya llamado la atención? 😊`
+      return `[Catálogo de ${cat} enviado exitosamente. El cliente ya recibió el enlace — haz seguimiento con una pregunta de cierre]`
     }
 
     case 'solicitar_asesor': {
@@ -474,7 +478,14 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const carrito = await getCarrito(psid)
       if (carrito.length >= 10) return 'Tu carrito está lleno (máximo 10 productos). Confirma la compra o elimina algo primero.'
       const ya = carrito.find(i => i.producto.toLowerCase() === (args.producto ?? '').toLowerCase())
-      if (ya) return `*${args.producto}* ya está en tu carrito 😊 ¿Quieres confirmar la compra o agregar algo más?`
+      if (ya) {
+        // Actualizar cantidad si se especificó una diferente
+        const nuevaCantidad = args.cantidad ?? ya.cantidad ?? 1
+        ya.cantidad = nuevaCantidad
+        await setCarrito(psid, carrito)
+        const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
+        return `Actualicé *${args.producto}* a ${nuevaCantidad} unidad${nuevaCantidad > 1 ? 'es' : ''} en tu carrito 🛍️\nTotal: *$${total.toLocaleString('es-CO')}*\n\n¿Agregamos algo más o confirmamos el pedido?`
+      }
       carrito.push({ producto: args.producto, precio: args.precio, cantidad: args.cantidad ?? 1 })
       await setCarrito(psid, carrito)
       const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
@@ -706,10 +717,10 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
       await ig.sendTextMessage(psid, '¡Hola! 😊 Soy Elena, tu asistente virtual de DeCasa Muebles y Decoración. Es un placer atenderte 🛋️')
     }
 
-    const texto = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo)
-    if (texto) {
-      await ig.sendTextMessage(psid, texto)
-      await db.guardarMensaje(psid, 'assistant', texto)
+    const respuestaFinal = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo)
+    if (respuestaFinal) {
+      await ig.sendTextMessage(psid, respuestaFinal)
+      await db.guardarMensaje(psid, 'assistant', respuestaFinal)
     }
   } catch (e) {
     console.error('[AI] Error:', e.message)
