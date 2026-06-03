@@ -18,6 +18,49 @@ const igTel = psid => `ig_${psid}`
 
 async function runMigrations() {
   try {
+    // clientes_wa y estado_usuario son tablas compartidas con el agente de WhatsApp.
+    // NO están en las migraciones de Laravel (decasa-api), así que el agente IG debe
+    // poder crearlas por sí mismo: no puede depender de que el agente WA arranque primero.
+    // telefono VARCHAR(50): los PSID de Instagram (ig_<17-18 dígitos>) no caben en VARCHAR(20).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS clientes_wa (
+        id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        telefono         VARCHAR(50) UNIQUE NOT NULL,
+        nombre           VARCHAR(100),
+        created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_interaction DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `)
+    // Si la tabla ya existía (creada por el agente WA con VARCHAR(20)), ampliarla.
+    try {
+      await pool.query(`ALTER TABLE clientes_wa MODIFY telefono VARCHAR(50) NOT NULL`)
+    } catch (e) { /* ya es VARCHAR(50) o sin permisos — ignorar */ }
+
+    // Esquema COMPLETO idéntico al del agente WhatsApp: así, arranque quien arranque
+    // primero, el CREATE IF NOT EXISTS del otro es un no-op y nunca faltan columnas.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS estado_usuario (
+        usuario_id                     BIGINT UNSIGNED PRIMARY KEY,
+        categoria_actual               VARCHAR(50),
+        producto_pendiente             JSON,
+        carrito                        JSON,
+        transferido                    BOOLEAN DEFAULT FALSE,
+        greeting_sent                  BOOLEAN DEFAULT FALSE,
+        tiene_pedido                   BOOLEAN DEFAULT FALSE,
+        ultimo_producto                JSON,
+        agendando_cita                 BOOLEAN DEFAULT FALSE,
+        paso_agenda                    INT DEFAULT 0,
+        datos_agenda                   JSON,
+        transferencia_medida_pendiente JSON,
+        candidatos_pendientes          JSON,
+        subtipo_pendiente              JSON,
+        comparacion_pendiente          JSON,
+        comparacion_productos          JSON,
+        presupuesto                    VARCHAR(100),
+        FOREIGN KEY (usuario_id) REFERENCES clientes_wa(id) ON DELETE CASCADE
+      )
+    `)
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ig_conversaciones (
         id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -151,20 +194,35 @@ async function getCatalogos() {
 
 // ── Inventario ────────────────────────────────────────────────────────────────
 
+// Traduce las categorías crudas de la BD oficial (productos.categoria) a las
+// claves canónicas que usan el system prompt y las tools. Sin este mapa, el
+// filtro por categoría de buscar_productos devuelve 0 resultados para estas 5.
+const CATEGORIA_KEY_MAP = {
+  comedores:  'bases_comedores',
+  mesas_aux:  'mesas_auxiliares',
+  sillas_aux: 'sillas_auxiliares',
+  cajoneros:  'cajoneros_bifes',
+  sofa_camas: 'sofas_camas',
+}
+
+function normalizarCategoria(cat) {
+  return CATEGORIA_KEY_MAP[cat] ?? cat
+}
+
 async function getInventario() {
+  let rows
   try {
-    const [rows] = await pool.query(
+    [rows] = await pool.query(
       `SELECT nombre, precio_base AS precio, foto_url AS imagen, medidas, material, categoria AS subcategoria
        FROM productos WHERE activo = 1 ORDER BY categoria, nombre`
     )
-    return rows
   } catch {
-    const [rows] = await pool.query(
+    [rows] = await pool.query(
       `SELECT nombre, precio, imagen, medidas, material, subcategoria
        FROM productos WHERE activo IS NULL OR activo = 1 ORDER BY subcategoria, nombre`
     )
-    return rows
   }
+  return rows.map(r => ({ ...r, subcategoria: normalizarCategoria(r.subcategoria) }))
 }
 
 // ── Interno ───────────────────────────────────────────────────────────────────

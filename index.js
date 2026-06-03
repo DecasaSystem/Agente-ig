@@ -755,20 +755,22 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   const histPrev       = await db.getHistorial(psid, 1)
   const esPrimerMensaje = histPrev.length === 0
 
-  await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
-
   try {
     if (esPrimerMensaje) {
       await ig.sendTextMessage(psid, '¡Hola! 😊 Soy Elena, tu asistente virtual de DeCasa Muebles y Decoración. Es un placer atenderte 🛋️')
     }
 
+    // runAgentLoop lee el historial y le anexa el mensaje actual; guardamos el
+    // mensaje del usuario DESPUÉS para no inyectarlo dos veces en el contexto.
     const respuestaFinal = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo)
+    await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
     if (respuestaFinal) {
       await ig.sendTextMessage(psid, respuestaFinal)
       await db.guardarMensaje(psid, 'assistant', respuestaFinal)
     }
   } catch (e) {
     console.error('[AI] Error:', e.message)
+    await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
     await ig.sendTextMessage(psid, 'Tuve un problema procesando tu mensaje. Un asesor te contactará pronto 🙏')
   }
 }
