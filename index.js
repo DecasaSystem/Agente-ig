@@ -699,6 +699,37 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     if (mediaAdj && !mensajeAI.trim()) {
       mensajeAI = '[El cliente compartió un video/reel de @muebles_decasa] Quiero más información'
     }
+
+    // Audio recibido — transcribir con Whisper
+    const audioAdj = adjuntos.find(a => a.type === 'audio')
+    if (audioAdj?.payload?.url) {
+      try {
+        const { toFile } = require('openai')
+        const { buffer, contentType } = await ig.downloadMediaToBuffer(audioAdj.payload.url)
+        const mimeClean = (contentType || 'audio/mp4').split(';')[0]
+        const ext = mimeClean.split('/')[1] || 'mp4'
+        const audioFile = await toFile(buffer, `audio.${ext}`, { type: mimeClean })
+        const transcripcion = await openai.audio.transcriptions.create({
+          model: 'whisper-1',
+          file: audioFile,
+          language: 'es',
+        })
+        const textoTranscrito = transcripcion.text?.trim()
+        if (textoTranscrito) {
+          mensajeAI = textoTranscrito
+          console.log(`[AUDIO→TEXTO] ${psid}: ${textoTranscrito}`)
+        } else if (!mensajeAI.trim()) {
+          await ig.sendTextMessage(psid, 'No pude entender el audio. ¿Podrías escribir tu consulta? 😊')
+          return
+        }
+      } catch (e) {
+        console.warn('[AUDIO] Error transcribiendo:', e.message)
+        if (!mensajeAI.trim()) {
+          await ig.sendTextMessage(psid, 'No pude procesar el audio. ¿Puedes escribir tu consulta? 😊')
+          return
+        }
+      }
+    }
   }
 
   // Respuesta a historia — intentar obtener caption e imagen
