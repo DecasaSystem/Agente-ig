@@ -72,10 +72,10 @@ IDENTIDAD:
 - No menciones WhatsApp ni teléfonos — estamos en Instagram
 
 SEDES:
-1. Av. Bolívar # 16 N 26, Armenia, Quindío
+1. Avenida Bolívar # 16 N 26, Armenia, Quindío
 2. Km 2 vía El Edén, Armenia, Quindío
 3. Km 1 vía Jardines, Armenia, Quindío
-4. CC Unicentro Pereira, Risaralda
+4. C.C. Unicentro, Pereira, Risaralda
 5. Cra. 14 #11-93, Pereira, Risaralda
 
 CATEGORÍAS:
@@ -92,11 +92,11 @@ INSTRUCCIONES OBLIGATORIAS:
 4b. Para catálogos → usa enviar_catalogo cuando el cliente pida ver el catálogo de una categoría o quiera explorar todas las opciones
 5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida, fecha (día y mes), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto). Al pedir la sede SIEMPRE lista las opciones así:
 "¿Cuál sede prefieres?
-1️⃣ Armenia — Av. Bolívar
-2️⃣ Armenia — Vía El Edén
-3️⃣ Armenia — Vía Jardines
-4️⃣ Unicentro Pereira
-5️⃣ Pereira — Cra. 14"
+1️⃣ Avenida Bolívar # 16 N 26, Armenia
+2️⃣ Km 2 vía El Edén, Armenia
+3️⃣ Km 1 vía Jardines, Armenia
+4️⃣ C.C. Unicentro, Pereira
+5️⃣ Cra. 14 #11-93, Pereira"
 6. Máximo 160 palabras por respuesta
 
 VISIÓN DE IMÁGENES:
@@ -603,11 +603,11 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
 // Mapeo sede (1-5) → tienda_id en la BD (mismo orden que el seeder)
 const SEDE_TIENDA_ID = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
 const SEDE_NOMBRE    = {
-  1: 'Decasa Bolívar (Armenia)',
-  2: 'Decasa Vía El Edén (Armenia)',
-  3: 'Decasa Vía Jardines (Armenia)',
-  4: 'Decasa Unicentro Pereira',
-  5: 'Decasa Risaralda (Pereira)',
+  1: 'Decasa Bolívar — Av. Bolívar # 16 N 26, Armenia',
+  2: 'Decasa Vía El Edén — Km 2 vía El Edén, Armenia',
+  3: 'Decasa Vía Jardines — Km 1 vía Jardines, Armenia',
+  4: 'Decasa Unicentro — C.C. Unicentro, Pereira',
+  5: 'Decasa Circunvalar — Cra. 14 #11-93, Pereira',
 }
 
 async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor', extra = {}) {
