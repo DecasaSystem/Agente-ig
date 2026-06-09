@@ -120,6 +120,12 @@ CARRITO Y COMPRAS:
 12. Para finalizar la compra → llama confirmar_pedido (solo cuando el cliente confirme explícitamente)
 NUNCA llames solicitar_asesor cuando el cliente quiera comprar — usa siempre el flujo de carrito
 
+DISPONIBILIDAD EN TIENDAS — REGLA ABSOLUTA:
+- NUNCA respondas en qué tienda está disponible un producto sin llamar PRIMERO a consultar_disponibilidad
+- buscar_productos NO tiene información de stock — solo da precio, material y medidas
+- Si el cliente pregunta "¿tienes X?", "¿está disponible?", "¿en qué tienda está?", "¿hay unidades?", "¿lo tienen?" → llama consultar_disponibilidad antes de responder
+- Menciona SOLO las tiendas que devuelva consultar_disponibilidad — NUNCA inventes o asumas en cuál tienda hay stock
+
 ENTREGA Y VISITAS:
 - DeCasa hace entregas a domicilio — el cliente NO necesita ir a la tienda para comprar
 - Menciónalo proactivamente cuando el cliente muestre interés real: "te lo llevamos a tu casa 🚚, no tienes que desplazarte"
@@ -169,7 +175,7 @@ ${inv || 'Cargando inventario...'}`
 const TOOLS = [
   {
     name: 'buscar_productos',
-    description: 'Busca productos en el inventario por nombre, descripción o categoría. Úsalo para cualquier pregunta sobre productos, precios o disponibilidad.',
+    description: 'Busca productos en el catálogo por nombre, descripción o categoría. Solo devuelve precio, material y medidas. NO incluye stock ni disponibilidad en tiendas — para eso usa consultar_disponibilidad.',
     parameters: {
       type: 'object',
       properties: {
