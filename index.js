@@ -87,6 +87,7 @@ INSTRUCCIONES OBLIGATORIAS:
 1. SIEMPRE usa buscar_productos antes de mencionar cualquier producto o precio
 2. NUNCA inventes precios ni productos — solo lo que devuelva buscar_productos
 3. Cuando el cliente mencione presupuesto o "barato/económico" → usa buscar_por_presupuesto
+3b. Cuando el cliente pregunte si hay disponibilidad, si pueden conseguir algo, si está en tienda, o antes de confirmar un pedido → llama consultar_disponibilidad con el nombre exacto del producto. Si hay stock en tienda: díselo con entusiasmo. Si solo hay en fábrica: es una ventaja (fabricación propia). Si no hay stock: ofrece fabricarlo al mismo precio (nunca digas que no se puede conseguir).
 4. Para fotos → usa enviar_foto (escribe "Te envío la foto 👇" antes de llamarla)
 4b. Para catálogos → usa enviar_catalogo cuando el cliente pida ver el catálogo de una categoría o quiera explorar todas las opciones
 5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida, fecha (día y mes), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto). Al pedir la sede SIEMPRE lista las opciones así:
@@ -257,6 +258,20 @@ const TOOLS = [
         },
       },
       required: ['categoria'],
+    },
+  },
+  {
+    name: 'consultar_disponibilidad',
+    description: 'Consulta en tiempo real si hay unidades disponibles en tiendas o fábrica para un producto. Llamar cuando el cliente pregunte si hay stock, si pueden conseguir algo, si está disponible, o antes de confirmar un pedido.',
+    parameters: {
+      type: 'object',
+      properties: {
+        nombre_producto: {
+          type: 'string',
+          description: 'Nombre exacto del producto tal como aparece en el inventario (ej: "Sofá Medellín 3 puestos")',
+        },
+      },
+      required: ['nombre_producto'],
     },
   },
 ]
@@ -531,6 +546,25 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
       )
       return `[Confirmación de pedido enviada al cliente con el resumen completo. Solo despídete con una frase corta, sin repetir el resumen.]`
+    }
+
+    case 'consultar_disponibilidad': {
+      const { nombre_producto } = args
+      const filas = await db.consultarStock(nombre_producto)
+      const tiendas = filas.filter(f => !f.es_fabrica).map(f => `${f.tienda} (${f.cantidad_disponible} und)`)
+      const fabrica = filas.find(f => f.es_fabrica)
+      if (filas.length === 0) {
+        return { disponible: false, tiendas: [], en_fabrica: false, mensaje: 'No hay unidades en exhibición ahora, pero DeCasa puede fabricarlo al mismo precio.' }
+      }
+      return {
+        disponible: true,
+        tiendas,
+        en_fabrica: !!fabrica,
+        unidades_fabrica: fabrica?.cantidad_disponible ?? 0,
+        mensaje: tiendas.length > 0
+          ? `Hay unidades disponibles en: ${tiendas.join(', ')}.`
+          : `Hay ${fabrica.cantidad_disponible} und en fábrica, disponible para entrega.`
+      }
     }
 
     default:

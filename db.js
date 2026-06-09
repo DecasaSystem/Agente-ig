@@ -209,6 +209,20 @@ function normalizarCategoria(cat) {
   return CATEGORIA_KEY_MAP[cat] ?? cat
 }
 
+async function consultarStock(nombreProducto) {
+  const like = `%${nombreProducto}%`
+  const [rows] = await pool.query(
+    `SELECT t.nombre AS tienda, t.es_fabrica, i.cantidad_disponible
+     FROM inventario i
+     JOIN productos p ON i.producto_id = p.id
+     JOIN tiendas t   ON i.tienda_id   = t.id
+     WHERE p.nombre LIKE ? AND t.activa = 1 AND i.cantidad_disponible > 0
+     ORDER BY t.es_fabrica ASC, t.nombre ASC`,
+    [like]
+  )
+  return rows
+}
+
 async function getInventario() {
   let rows
   try {
@@ -248,4 +262,5 @@ module.exports = {
   limpiarHistorialAntiguo,
   getInventario,
   getCatalogos,
+  consultarStock,
 }
