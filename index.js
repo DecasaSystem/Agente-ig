@@ -694,10 +694,21 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
       } catch { /* continuar sin imagen */ }
     }
 
-    // Video/reel compartido
+    // Video/reel compartido — leer caption para identificar el producto
     const mediaAdj = adjuntos.find(a => ['video', 'reel', 'ig_reel'].includes(a.type))
-    if (mediaAdj && !mensajeAI.trim()) {
-      mensajeAI = '[El cliente compartió un video/reel de @muebles_decasa] Quiero más información'
+    if (mediaAdj) {
+      const captionReel = mediaAdj.payload?.title ?? mediaAdj.payload?.caption ?? ''
+      if (captionReel) {
+        const resultados = buscarEnInventario(captionReel, null, 3)
+        if (resultados.length) {
+          const info = resultados.map(formatProducto).join('\n\n')
+          mensajeAI = `[El cliente compartió un reel de @muebles_decasa: "${captionReel}". Producto en inventario:\n${info}]\n${mensajeAI || '¿Cuánto vale?'}`
+        } else {
+          mensajeAI = `[El cliente compartió un reel de @muebles_decasa: "${captionReel}"]\n${mensajeAI || '¿Cuánto vale o cómo consigo este mueble?'}`
+        }
+      } else if (!mensajeAI.trim()) {
+        mensajeAI = '[El cliente compartió un video/reel de @muebles_decasa] Quiero más información'
+      }
     }
 
     // Audio recibido — transcribir con Whisper
@@ -756,8 +767,15 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   const esPrimerMensaje = histPrev.length === 0
 
   try {
-    if (esPrimerMensaje) {
-      await ig.sendTextMessage(psid, '¡Hola! 😊 Soy Elena, tu asistente virtual de DeCasa Muebles y Decoración. Es un placer atenderte 🛋️')
+    const SALUDO_IG = '¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️'
+    const esSoloSaludo = /^[¡!¿?\s]*(hola|holis|holi|holaa|buenas?|buenos\s*(dias?|tardes?|noches?)|que\s*tal|hi|hello|hey|saludos)[¡!¿?\s.]*$/i.test(mensajeAI.trim())
+
+    if (esPrimerMensaje && esSoloSaludo) {
+      // Solo saludo inicial: responder con el hardcodeado y no llamar a OpenAI
+      await ig.sendTextMessage(psid, SALUDO_IG)
+      await db.guardarMensaje(psid, 'user', mensajeAI)
+      await db.guardarMensaje(psid, 'assistant', SALUDO_IG)
+      return
     }
 
     // runAgentLoop lee el historial y le anexa el mensaje actual; guardamos el
