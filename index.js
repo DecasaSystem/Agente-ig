@@ -132,6 +132,15 @@ CUÁNDO TRANSFERIR (llama solicitar_asesor inmediatamente):
 - Pregunta por costo de envío, cobertura de entrega, instalación o garantía
 - Lleva 2+ mensajes con la misma duda sin resolución
 - Expresa frustración
+El campo 'motivo' de solicitar_asesor debe ser un resumen claro en 1-2 líneas para el vendedor. Incluye siempre:
+• Qué quiere el cliente: comprar en tienda / que lo fabriquen / personalizar / consultar envío / otro
+• Nombre exacto del producto de interés (si lo mencionó)
+• Si llamaste consultar_disponibilidad: indica el resultado (ej: "hay 2 und en Decasa Edén" o "sin stock, fabricar")
+Ejemplos correctos:
+- "Quiere comprar Sofá Medellín 3P. Hay 2 und en Decasa Edén. Pregunta por envío a Calarcá."
+- "Quiere que le fabriquen Cama Lisboa 2P (sin stock en tiendas)."
+- "Quiere personalizar Sofá Roma con tela verde y patas negras."
+- "Pregunta por costo de envío para Silla Cali a Manizales."
 
 TONO Y ESTILO DE VENTA:
 Eres una vendedora cálida, entusiasta y persuasiva — como una amiga experta en decoración que quiere ayudarte a tomar la mejor decisión. No eres un catálogo de datos.
@@ -480,7 +489,18 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'solicitar_asesor': {
-      await enviarNotificacionSistema(psid, userInfo, args.motivo, args.tipo)
+      // Adjuntar contexto del estado aunque Elena no lo haya incluido en motivo
+      const ultimoProdIG = await db.getUltimoProducto(psid)
+      const carritoIG    = await getCarrito(psid)
+      let motivoFinal = args.motivo || 'Solicitud de asesor'
+      if (ultimoProdIG?.nombre && !motivoFinal.includes(ultimoProdIG.nombre)) {
+        motivoFinal += `\nÚltimo producto visto: ${ultimoProdIG.nombre}`
+      }
+      if (carritoIG.length > 0 && !motivoFinal.toLowerCase().includes('carrito')) {
+        const resumenCarritoIG = carritoIG.map(i => `${i.producto} ×${i.cantidad || 1}`).join(', ')
+        motivoFinal += `\nCarrito: ${resumenCarritoIG}`
+      }
+      await enviarNotificacionSistema(psid, userInfo, motivoFinal, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined })
       const aviso = avisoHorarioTarde()
       return `Entendido, voy a conectarte con uno de nuestros asesores 😊${aviso ? `\n\n${aviso}` : ''}`
     }
