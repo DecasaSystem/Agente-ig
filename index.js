@@ -577,19 +577,15 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     case 'consultar_disponibilidad': {
       const { nombre_producto } = args
       const filas = await db.consultarStock(nombre_producto)
-      const tiendas = filas.filter(f => !f.es_fabrica).map(f => `${f.tienda} (${f.cantidad_disponible} und)`)
-      const fabrica = filas.find(f => f.es_fabrica)
       if (filas.length === 0) {
-        return { disponible: false, tiendas: [], en_fabrica: false, mensaje: 'No hay unidades en exhibición ahora, pero DeCasa puede fabricarlo al mismo precio.' }
+        return { disponible: false, tiendas: [], mensaje: 'No hay unidades en exhibición ahora, pero DeCasa puede fabricarlo al mismo precio.' }
       }
+      // Tratar todas las tiendas igual: Bolívar es fábrica internamente pero también es tienda física
+      const tiendas = filas.map(f => `${f.tienda} (${f.cantidad_disponible} und)`)
       return {
         disponible: true,
         tiendas,
-        en_fabrica: !!fabrica,
-        unidades_fabrica: fabrica?.cantidad_disponible ?? 0,
-        mensaje: tiendas.length > 0
-          ? `Hay unidades disponibles en: ${tiendas.join(', ')}.`
-          : `Hay ${fabrica.cantidad_disponible} und en fábrica, disponible para entrega.`
+        mensaje: `Hay unidades disponibles en: ${tiendas.join(', ')}.`
       }
     }
 
