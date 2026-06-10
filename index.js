@@ -87,7 +87,7 @@ INSTRUCCIONES OBLIGATORIAS:
 1. SIEMPRE usa buscar_productos antes de mencionar cualquier producto o precio
 2. NUNCA inventes precios ni productos — solo lo que devuelva buscar_productos
 3. Cuando el cliente mencione presupuesto o "barato/económico" → usa buscar_por_presupuesto
-3b. Cuando el cliente pregunte "¿tienes X?", "¿hay X?", "¿tienen X?", "¿en qué tienda está?", "¿dónde lo puedo ver?", si hay disponibilidad, si pueden conseguir algo, o antes de confirmar un pedido → llama consultar_disponibilidad con el nombre exacto del producto (el mismo nombre que devolvió buscar_productos). NUNCA respondas con la lista genérica de las 5 sedes — solo menciona la(s) tienda(s) que el resultado de consultar_disponibilidad indique. Si hay stock en tienda: díselo con entusiasmo y di el nombre de la tienda específica. Si solo hay en fábrica: es una ventaja, fabricación propia. Si no hay stock: ofrece fabricarlo al mismo precio (nunca digas que no se puede conseguir).
+3b. Cuando el cliente pregunte si hay stock/disponibilidad/en qué tienda/si lo pueden conseguir → responde SIEMPRE: "¡Seguramente sí! 😊 En DeCasa manejamos buen stock y lo que no tengamos en tienda lo fabricamos al mismo precio desde nuestro taller. ¿Quieres que te comunique con un asesor para confirmar disponibilidad y coordinar?" — luego espera su respuesta. Si el cliente dice que sí quiere confirmar → llama solicitar_asesor. NUNCA menciones una tienda específica ni inventes dónde está disponible.
 4. Para fotos → usa enviar_foto (escribe "Te envío la foto 👇" antes de llamarla)
 4b. Para catálogos → usa enviar_catalogo cuando el cliente pida ver el catálogo de una categoría o quiera explorar todas las opciones
 5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida, fecha (día y mes), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto). Al pedir la sede SIEMPRE lista las opciones así:
@@ -121,10 +121,9 @@ CARRITO Y COMPRAS:
 NUNCA llames solicitar_asesor cuando el cliente quiera comprar — usa siempre el flujo de carrito
 
 DISPONIBILIDAD EN TIENDAS — REGLA ABSOLUTA:
-- NUNCA respondas en qué tienda está disponible un producto sin llamar PRIMERO a consultar_disponibilidad
-- buscar_productos NO tiene información de stock — solo da precio, material y medidas
-- Si el cliente pregunta "¿tienes X?", "¿está disponible?", "¿en qué tienda está?", "¿hay unidades?", "¿lo tienen?" → llama consultar_disponibilidad antes de responder
-- Menciona SOLO las tiendas que devuelva consultar_disponibilidad — NUNCA inventes o asumas en cuál tienda hay stock
+- NUNCA digas en qué tienda específica está un producto — no tienes esa información en tiempo real
+- Si el cliente pregunta "¿tienes X?", "¿está disponible?", "¿en qué tienda?", "¿hay unidades?" → responde siempre de forma positiva general: "¡Seguramente sí! En DeCasa manejamos buen stock y lo que no esté en tienda lo fabricamos al mismo precio 🏭" y ofrece conectar con asesor
+- Si el cliente quiere confirmar disponibilidad exacta o coordinar visita → llama solicitar_asesor
 
 ENTREGA Y VISITAS:
 - DeCasa hace entregas a domicilio — el cliente NO necesita ir a la tienda para comprar
@@ -141,10 +140,10 @@ CUÁNDO TRANSFERIR (llama solicitar_asesor inmediatamente):
 El campo 'motivo' de solicitar_asesor debe ser un resumen claro en 1-2 líneas para el vendedor. Incluye siempre:
 • Qué quiere el cliente: comprar en tienda / que lo fabriquen / personalizar / consultar envío / otro
 • Nombre exacto del producto de interés (si lo mencionó)
-• Si llamaste consultar_disponibilidad: indica el resultado (ej: "hay 2 und en Decasa Edén" o "sin stock, fabricar")
+• Si el cliente quiere confirmar disponibilidad o visitar tienda: inclúyelo en el motivo
 Ejemplos correctos:
-- "Quiere comprar Sofá Medellín 3P. Hay 2 und en Decasa Edén. Pregunta por envío a Calarcá."
-- "Quiere que le fabriquen Cama Lisboa 2P (sin stock en tiendas)."
+- "Quiere confirmar disponibilidad y visitar tienda para Sofá Medellín 3P."
+- "Quiere que le fabriquen Cama Lisboa 2P."
 - "Quiere personalizar Sofá Roma con tela verde y patas negras."
 - "Pregunta por costo de envío para Silla Cali a Manizales."
 
@@ -175,7 +174,7 @@ ${inv || 'Cargando inventario...'}`
 const TOOLS = [
   {
     name: 'buscar_productos',
-    description: 'Busca productos en el catálogo por nombre, descripción o categoría. Solo devuelve precio, material y medidas. NO incluye stock ni disponibilidad en tiendas — para eso usa consultar_disponibilidad.',
+    description: 'Busca productos en el catálogo por nombre, descripción o categoría. Solo devuelve precio, material y medidas. NO incluye stock ni disponibilidad en tiendas.',
     parameters: {
       type: 'object',
       properties: {
@@ -281,52 +280,10 @@ const TOOLS = [
       required: ['categoria'],
     },
   },
-  {
-    name: 'consultar_disponibilidad',
-    description: 'Consulta en tiempo real si hay unidades disponibles en tiendas o fábrica para un producto. Llamar cuando el cliente pregunte si hay stock, si pueden conseguir algo, si está disponible, o antes de confirmar un pedido.',
-    parameters: {
-      type: 'object',
-      properties: {
-        nombre_producto: {
-          type: 'string',
-          description: 'Nombre exacto del producto tal como aparece en el inventario (ej: "Sofá Medellín 3 puestos")',
-        },
-      },
-      required: ['nombre_producto'],
-    },
-  },
 ]
-
-const RE_DISPONIBILIDAD = /\b(disponible|disponibles|tienes|tienen|hay|puedes\s+conseguir|conseguir|stock|en\s+qu[eé]\s+tienda|d[oó]nde\s+(lo|la)\s+puedo|d[oó]nde\s+(est[aá]|tienen|lo\s+tienen)|est[aá]\s+disponible|puedo\s+(verlo|verla|ir\s+a\s+ver)|tienen\s+en)\b/i
 
 async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}) {
   const historial = await db.getHistorial(psid, 12)
-
-  // Pre-fetch stock cuando la pregunta es sobre disponibilidad
-  let stockInyectado = ''
-  if (RE_DISPONIBILIDAD.test(mensajeUsuario)) {
-    try {
-      let prod = await db.getUltimoProducto(psid)
-      // Si no hay último producto guardado, buscar por el texto del mensaje
-      if (!prod?.nombre) {
-        const encontrados = buscarEnInventario(mensajeUsuario, null, 1)
-        if (encontrados.length > 0) prod = { nombre: encontrados[0].nombre }
-      }
-      if (prod?.nombre) {
-        const filas = await db.consultarStock(prod.nombre)
-        if (filas.length > 0) {
-          const lista = filas.map(f => `${f.tienda} (${f.cantidad_disponible} und)`).join(', ')
-          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO para "${prod.nombre}": HAY UNIDADES EN → ${lista}. MENCIONA SOLO estas tiendas, nunca otras.`
-        } else {
-          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO para "${prod.nombre}": SIN STOCK en tiendas. Di que DeCasa lo fabrica al mismo precio desde su taller.`
-        }
-      } else {
-        stockInyectado = `\n\n⚠️ REGLA CRÍTICA: No tienes stock confirmado. NUNCA menciones una tienda específica. Di solo: "En DeCasa siempre podemos conseguirte lo que buscas — desde tienda o directo desde fábrica al mismo precio 🏭". Si el cliente insiste en saber dónde verlo, llama consultar_disponibilidad.`
-      }
-    } catch (e) {
-      console.error('[stock-prefetch]', e.message)
-    }
-  }
 
   const userContent = imageBase64
     ? [
@@ -336,7 +293,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
     : mensajeUsuario
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt() + stockInyectado },
+    { role: 'system', content: buildSystemPrompt() },
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
     { role: 'user', content: userContent },
   ]
@@ -606,21 +563,6 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
       )
       return `[Confirmación de pedido enviada al cliente con el resumen completo. Solo despídete con una frase corta, sin repetir el resumen.]`
-    }
-
-    case 'consultar_disponibilidad': {
-      const { nombre_producto } = args
-      const filas = await db.consultarStock(nombre_producto)
-      if (filas.length === 0) {
-        return { disponible: false, tiendas: [], mensaje: 'No hay unidades en exhibición ahora, pero DeCasa puede fabricarlo al mismo precio.' }
-      }
-      // Tratar todas las tiendas igual: Bolívar es fábrica internamente pero también es tienda física
-      const tiendas = filas.map(f => `${f.tienda} (${f.cantidad_disponible} und)`)
-      return {
-        disponible: true,
-        tiendas,
-        mensaje: `Hay unidades disponibles en: ${tiendas.join(', ')}.`
-      }
     }
 
     default:
