@@ -937,6 +937,17 @@ function verificarFirma(req) {
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ ok: true, servicio: 'DeCasa Instagram Agent', inventario: inventario.length }))
 
+// ── Debug stock (temporal) ────────────────────────────────────────────────────
+app.get('/debug-stock', async (req, res) => {
+  const nombre = req.query.nombre ?? 'BASE 2K'
+  try {
+    const filas = await db.consultarStock(nombre)
+    res.json({ nombre, filas, inventario_cargado: inventario.length })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ── Páginas legales requeridas por Meta ───────────────────────────────────────
 app.get('/privacy', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8')

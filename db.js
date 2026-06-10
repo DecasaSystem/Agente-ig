@@ -4,9 +4,9 @@ const mysql = require('mysql2/promise')
 
 const pool = mysql.createPool({
   host:               process.env.DB_HOST,
-  user:               process.env.DB_USER,
+  user:               process.env.DB_USER     || process.env.DB_USERNAME,
   password:           process.env.DB_PASSWORD,
-  database:           process.env.DB_NAME,
+  database:           process.env.DB_NAME     || process.env.DB_DATABASE,
   port:               parseInt(process.env.DB_PORT ?? '3306'),
   ssl:                { rejectUnauthorized: false },
   waitForConnections: true,
