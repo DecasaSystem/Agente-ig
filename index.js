@@ -306,15 +306,22 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   let stockInyectado = ''
   if (RE_DISPONIBILIDAD.test(mensajeUsuario)) {
     try {
-      const ultimoProd = await db.getUltimoProducto(psid)
-      if (ultimoProd?.nombre) {
-        const filas = await db.consultarStock(ultimoProd.nombre)
+      let prod = await db.getUltimoProducto(psid)
+      // Si no hay último producto guardado, buscar por el texto del mensaje
+      if (!prod?.nombre) {
+        const encontrados = buscarEnInventario(mensajeUsuario, null, 1)
+        if (encontrados.length > 0) prod = { nombre: encontrados[0].nombre }
+      }
+      if (prod?.nombre) {
+        const filas = await db.consultarStock(prod.nombre)
         if (filas.length > 0) {
           const lista = filas.map(f => `${f.tienda} (${f.cantidad_disponible} und)`).join(', ')
-          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO AHORA MISMO para "${ultimoProd.nombre}": HAY UNIDADES EN → ${lista}. USA ESTE DATO en tu respuesta. No llames consultar_disponibilidad de nuevo para este producto.`
+          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO para "${prod.nombre}": HAY UNIDADES EN → ${lista}. MENCIONA SOLO estas tiendas, nunca otras.`
         } else {
-          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO AHORA MISMO para "${ultimoProd.nombre}": SIN UNIDADES en tiendas físicas. Ofrece fabricarlo al mismo precio.`
+          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO para "${prod.nombre}": SIN STOCK en tiendas. Di que DeCasa lo fabrica al mismo precio desde su taller.`
         }
+      } else {
+        stockInyectado = `\n\n⚠️ REGLA CRÍTICA: No tienes stock confirmado. NUNCA menciones una tienda específica. Di solo: "En DeCasa siempre podemos conseguirte lo que buscas — desde tienda o directo desde fábrica al mismo precio 🏭". Si el cliente insiste en saber dónde verlo, llama consultar_disponibilidad.`
       }
     } catch (e) {
       console.error('[stock-prefetch]', e.message)
