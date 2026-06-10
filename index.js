@@ -297,8 +297,29 @@ const TOOLS = [
   },
 ]
 
+const RE_DISPONIBILIDAD = /\b(disponible|disponibles|tienes|tienen|hay|puedes\s+conseguir|conseguir|stock|en\s+qu[eé]\s+tienda|d[oó]nde\s+(lo|la)\s+puedo|d[oó]nde\s+(est[aá]|tienen|lo\s+tienen)|est[aá]\s+disponible|puedo\s+(verlo|verla|ir\s+a\s+ver)|tienen\s+en)\b/i
+
 async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}) {
   const historial = await db.getHistorial(psid, 12)
+
+  // Pre-fetch stock cuando la pregunta es sobre disponibilidad
+  let stockInyectado = ''
+  if (RE_DISPONIBILIDAD.test(mensajeUsuario)) {
+    try {
+      const ultimoProd = await db.getUltimoProducto(psid)
+      if (ultimoProd?.nombre) {
+        const filas = await db.consultarStock(ultimoProd.nombre)
+        if (filas.length > 0) {
+          const lista = filas.map(f => `${f.tienda} (${f.cantidad_disponible} und)`).join(', ')
+          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO AHORA MISMO para "${ultimoProd.nombre}": HAY UNIDADES EN → ${lista}. USA ESTE DATO en tu respuesta. No llames consultar_disponibilidad de nuevo para este producto.`
+        } else {
+          stockInyectado = `\n\n⚠️ STOCK CONFIRMADO AHORA MISMO para "${ultimoProd.nombre}": SIN UNIDADES en tiendas físicas. Ofrece fabricarlo al mismo precio.`
+        }
+      }
+    } catch (e) {
+      console.error('[stock-prefetch]', e.message)
+    }
+  }
 
   const userContent = imageBase64
     ? [
@@ -308,7 +329,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
     : mensajeUsuario
 
   const messages = [
-    { role: 'system', content: buildSystemPrompt() },
+    { role: 'system', content: buildSystemPrompt() + stockInyectado },
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
     { role: 'user', content: userContent },
   ]
