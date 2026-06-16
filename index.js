@@ -64,8 +64,15 @@ function buildSystemPrompt() {
     `- ${p.nombre} | $${Number(p.precio ?? 0).toLocaleString('es-CO')} | ${p.medidas ?? ''} | ${p.material ?? ''} | ${p.subcategoria ?? ''}`
   ).join('\n')
 
+  const ahora = new Date()
+  const diasSemana = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado']
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre']
+  const fechaHoy = `${diasSemana[ahora.getDay()]} ${ahora.getDate()} de ${meses[ahora.getMonth()]} de ${ahora.getFullYear()}`
+
   return `Eres Elena, asesora de ventas de DeCasa en Instagram Direct (@muebles_decasa).
 DeCasa es una tienda colombiana de muebles de madera Flor Morado de alta calidad, con sedes en Armenia y Pereira.
+
+FECHA ACTUAL: Hoy es ${fechaHoy}. Usa esta fecha para resolver referencias relativas como "el miércoles", "esta semana", "el próximo viernes".
 
 IDENTIDAD:
 - Horario: Lunes-Viernes 8am-5pm | Sábado 8am-12pm
@@ -90,7 +97,7 @@ INSTRUCCIONES OBLIGATORIAS:
 3b. Cuando el cliente pregunte si hay stock/disponibilidad/en qué tienda/si lo pueden conseguir → responde SIEMPRE: "¡Seguramente sí! 😊 En DeCasa manejamos buen stock y lo que no tengamos en tienda lo fabricamos al mismo precio desde nuestro taller. ¿Quieres que te comunique con un asesor para confirmar disponibilidad y coordinar?" — luego espera su respuesta. Si el cliente dice que sí quiere confirmar → llama solicitar_asesor. NUNCA menciones una tienda específica ni inventes dónde está disponible.
 4. Para fotos → usa enviar_foto (escribe "Te envío la foto 👇" antes de llamarla)
 4b. Para catálogos → usa enviar_catalogo cuando el cliente pida ver el catálogo de una categoría o quiera explorar todas las opciones
-5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida, fecha (día y mes), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto). Al pedir la sede SIEMPRE lista las opciones así:
+5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida, fecha COMPLETA (día de la semana + número + mes + año, ej: "miércoles 18 de junio de 2026"), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto). Si el cliente da una fecha ambigua o incompleta (solo el día de la semana, solo el día sin año, o solo el mes sin número de día), usa FECHA ACTUAL para calcular la fecha correcta y CONFIRMA antes de agendar: "¿Confirmamos para el [día de semana] [número] de [mes] de [año]?". NUNCA llames agendar_cita con una fecha que no hayáis confirmado explícitamente. Al pedir la sede SIEMPRE lista las opciones así:
 "¿Cuál sede prefieres?
 1️⃣ Avenida Bolívar # 16 N 26, Armenia
 2️⃣ Km 2 vía El Edén, Armenia
@@ -214,7 +221,7 @@ const TOOLS = [
       properties: {
         nombre:    { type: 'string', description: 'Nombre completo del cliente' },
         ubicacion: { type: 'number', description: 'Número de sede 1-5' },
-        dia:       { type: 'string', description: 'Fecha de la visita (ej: "martes 3 de junio")' },
+        dia:       { type: 'string', description: 'Fecha de la visita con día de la semana, número de día, mes y año (ej: "martes 3 de junio de 2026"). SIEMPRE incluye el año. NUNCA inventes ni asumas el año — confírmalo con el cliente si es ambiguo.' },
         hora:      { type: 'string', description: 'Hora en formato HH:MM (dentro de horario comercial)' },
         motivo:    { type: 'string', description: 'Motivo de la visita (opcional, solo si el cliente lo menciona)' },
       },
