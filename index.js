@@ -296,13 +296,13 @@ const TOOLS = [
   },
 ]
 
-async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}) {
+async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}, imageMimeType = 'image/jpeg') {
   const historial = await db.getHistorial(psid, 12)
 
   const userContent = imageBase64
     ? [
         { type: 'text', text: mensajeUsuario },
-        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}`, detail: 'low' } },
+        { type: 'image_url', image_url: { url: `data:${imageMimeType};base64,${imageBase64}`, detail: 'low' } },
       ]
     : mensajeUsuario
 
@@ -701,6 +701,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
 
   let mensajeAI = texto ?? ''
   let imageBase64 = null  // imagen para visión de la IA
+  let imageMimeType = 'image/jpeg'
 
   // Post compartido en DM (type: ig_post) — buscar producto + descargar imagen
   if (adjuntos?.length) {
@@ -711,9 +712,12 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
 
       if (urlImagen) {
         try {
-          const { buffer } = await ig.downloadMediaToBuffer(urlImagen)
-          imageBase64 = buffer.toString('base64')
-          console.log('[post] imagen descargada para visión')
+          const { buffer, contentType } = await ig.downloadMediaToBuffer(urlImagen)
+          if (contentType?.startsWith('image/')) {
+            imageBase64 = buffer.toString('base64')
+            imageMimeType = contentType
+            console.log('[post] imagen descargada para visión')
+          }
         } catch (e) { console.warn('[post] no se pudo descargar imagen:', e.message) }
       }
 
@@ -734,8 +738,11 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     const imagenes = adjuntos.filter(a => a.type === 'image')
     if (imagenes.length && !imageBase64 && !esVisualizacion(texto)) {
       try {
-        const { buffer } = await ig.downloadMediaToBuffer(imagenes[0].payload.url)
-        imageBase64 = buffer.toString('base64')
+        const { buffer, contentType } = await ig.downloadMediaToBuffer(imagenes[0].payload.url)
+        if (contentType?.startsWith('image/')) {
+          imageBase64 = buffer.toString('base64')
+          imageMimeType = contentType
+        }
         if (!mensajeAI.trim()) mensajeAI = 'El cliente envió una imagen'
       } catch { /* continuar sin imagen */ }
     }
@@ -795,10 +802,15 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     if (storyId) {
       const details = await ig.getMediaDetails(storyId)
       if (details?.caption) storyCtx = ` La historia decía: "${details.caption}".`
-      if (details?.media_url && !imageBase64) {
+      // Las historias en video no se pueden pasar como imagen a la IA — usar el thumbnail en su lugar
+      const imagenHistoria = details?.media_type === 'VIDEO' ? details?.thumbnail_url : details?.media_url
+      if (imagenHistoria && !imageBase64) {
         try {
-          const { buffer } = await ig.downloadMediaToBuffer(details.media_url)
-          imageBase64 = buffer.toString('base64')
+          const { buffer, contentType } = await ig.downloadMediaToBuffer(imagenHistoria)
+          if (contentType?.startsWith('image/')) {
+            imageBase64 = buffer.toString('base64')
+            imageMimeType = contentType
+          }
         } catch { /* continuar sin imagen */ }
       }
     }
@@ -826,7 +838,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
 
     // runAgentLoop lee el historial y le anexa el mensaje actual; guardamos el
     // mensaje del usuario DESPUÉS para no inyectarlo dos veces en el contexto.
-    const respuestaFinal = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo)
+    const respuestaFinal = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo, imageMimeType)
     await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
     if (respuestaFinal) {
       await ig.sendTextMessage(psid, respuestaFinal)
