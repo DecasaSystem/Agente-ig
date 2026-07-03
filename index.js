@@ -145,6 +145,12 @@ FORMAS DE PAGO Y DESCUENTOS:
 - DESCUENTOS: aplican SOLO con pago en efectivo o transferencia bancaria. NO aplican con tarjeta ni con ADDI. Si el cliente pregunta cuánto es el descuento → dile que aplica con efectivo o transferencia y que el valor varía, luego pregunta: "¿Quieres que te comunique con un asesor para que te indique el descuento exacto?" → solo transfiere si el cliente dice que sí
 - ADDI: es el único sistema de crédito que manejamos. Si el cliente pregunta por ADDI, Sistecredito, crédito, cuotas, financiación o cualquier otra forma de crédito → dile que el crédito disponible es ADDI y pregunta: "¿Quieres que te comunique con un asesor para darte todos los detalles?" → solo transfiere si el cliente dice que sí
 
+PROMOCIÓN VIGENTE (SOLO hasta el 6 de julio de 2026 — si FECHA ACTUAL ya pasó esa fecha, ignora esta sección por completo y no la menciones):
+- Tenemos 20% de descuento en sofás y comedores seleccionados (no todos los productos de esas categorías, solo los que aparecen en el catálogo de descuento)
+- Si el cliente pregunta por sofás, comedores, ofertas, promociones o descuentos → menciónalo proactivamente: "¡Justo ahora estamos con 20% de descuento en algunos sofás y comedores! 🎉 ¿Quieres verlos?"
+- Si el cliente dice que sí → llama enviar_catalogo con categoria='descuento_sofas' y/o categoria='descuento_comedores' según lo que le interese (pregunta cuál si no lo dijo, o manda ambos si quiere ver los dos)
+- Si el cliente pregunta el precio exacto con descuento, cómo aplicarlo o cualquier detalle específico de esta promoción → llama solicitar_asesor. NUNCA calcules ni inventes el precio con descuento tú misma
+
 CUÁNDO TRANSFERIR (llama solicitar_asesor inmediatamente):
 - El cliente confirma que SÍ quiere hablar con el asesor para detalles de ADDI, cuotas, financiación o descuentos exactos
 - Quiere producto a medida, color especial o personalización
@@ -288,7 +294,7 @@ const TOOLS = [
       properties: {
         categoria: {
           type: 'string',
-          description: 'Categoría del catálogo. Valores posibles: sofas, camas, bases_comedores, mesas_auxiliares, mesas_centro, mesas_noche, mesas_tv, sillas_auxiliares, sillas_barra, sofas_camas, sofas_modulares, cajoneros_bifes',
+          description: 'Categoría del catálogo. Valores posibles: sofas, camas, bases_comedores, mesas_auxiliares, mesas_centro, mesas_noche, mesas_tv, sillas_auxiliares, sillas_barra, sofas_camas, sofas_modulares, cajoneros_bifes, descuento_sofas, descuento_comedores',
         },
       },
       required: ['categoria'],
@@ -490,7 +496,11 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         url = entrada?.[1]
       }
       if (!url) return `No tengo catálogo disponible para esa categoría en este momento. Puedo mostrarte productos específicos si me dices qué buscas 😊`
-      await ig.sendTextMessage(psid, `Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:\n${url}`)
+      const esDescuentoIG = cat.startsWith('descuento')
+      const mensajeCatalogo = esDescuentoIG
+        ? `Aquí tienes el catálogo con 20% de descuento 🎉 (válido hasta el 6 de julio) — toca el enlace para verlo:\n${url}`
+        : `Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:\n${url}`
+      await ig.sendTextMessage(psid, mensajeCatalogo)
       return `[Catálogo de ${cat} enviado exitosamente. El cliente ya recibió el enlace — haz seguimiento con una pregunta de cierre]`
     }
 
@@ -985,6 +995,7 @@ app.get('/delete-data', (req, res) => {
 // ── Inicio ────────────────────────────────────────────────────────────────────
 async function startServer() {
   await db.runMigrations()
+  await db.seedCatalogosDescuento()
   await cargarInventario()
   await cargarCatalogos()
   setInterval(cargarInventario, 30 * 60 * 1000)

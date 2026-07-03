@@ -192,6 +192,26 @@ async function getCatalogos() {
   return rows
 }
 
+// Promoción temporal (20% dcto sofás/comedores, vigente hasta el 6 de julio de 2026).
+// Se deja como seed idempotente en vez de requerir acceso manual a la BD.
+async function seedCatalogosDescuento() {
+  const catalogos = [
+    ['catalogo_descuento_sofas', 'https://drive.google.com/file/d/1ZsxbGlUHoIOOkriFO3hTrgNnwD2y0fw0/view?usp=drive_link'],
+    ['catalogo_descuento_comedores', 'https://drive.google.com/file/d/1lHQbTEoaV-OBE4CQN89_A6YShJ4kj-Ok/view?usp=drive_link'],
+  ]
+  try {
+    for (const [clave, valor] of catalogos) {
+      await pool.query(
+        'INSERT INTO configuracion (clave, valor) VALUES (?, ?) ON DUPLICATE KEY UPDATE valor = VALUES(valor)',
+        [clave, valor]
+      )
+    }
+    console.log('[db] catálogos de descuento sembrados OK')
+  } catch (e) {
+    console.error('[db] error sembrando catálogos de descuento:', e.message)
+  }
+}
+
 // ── Inventario ────────────────────────────────────────────────────────────────
 
 // Traduce las categorías crudas de la BD oficial (productos.categoria) a las
@@ -262,5 +282,6 @@ module.exports = {
   limpiarHistorialAntiguo,
   getInventario,
   getCatalogos,
+  seedCatalogosDescuento,
   consultarStock,
 }
