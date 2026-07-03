@@ -349,6 +349,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
     }
   }
 
+  await enviarNotificacionSistema(psid, userInfo, 'La IA no pudo resolver la solicitud tras varios intentos (límite de rondas de herramientas alcanzado). Revisar conversación.', 'asesor').catch(err => console.error('[redes] no se pudo notificar límite de rondas:', err.message))
   return 'Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏'
 }
 
@@ -847,6 +848,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   } catch (e) {
     console.error('[AI] Error:', e.message)
     await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
+    await enviarNotificacionSistema(psid, userInfo, `Error técnico procesando el mensaje del cliente: ${e.message}. Revisar y contactar manualmente.`, 'asesor').catch(err => console.error('[redes] no se pudo notificar error:', err.message))
     await ig.sendTextMessage(psid, 'Tuve un problema procesando tu mensaje. Un asesor te contactará pronto 🙏')
   }
 }
