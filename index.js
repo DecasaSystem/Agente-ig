@@ -710,6 +710,19 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
 
   const userInfo = await ig.getUserInfo(psid)
   await db.getOrCreateClienteByPsid(psid, userInfo.username, userInfo.nombre)
+
+  // Mientras el cliente siga transferido a un asesor (dentro de la ventana de
+  // inactividad), la IA NO interviene bajo ninguna circunstancia. Se libera solo
+  // automáticamente tras 45 min sin actividad, así que si el cliente vuelve a
+  // escribir más tarde (otro día, por ejemplo) la IA lo atiende normalmente de nuevo.
+  if (await db.debeEsperarAsesor(psid)) {
+    await db.actualizarInteraccion(psid)
+    await ig.sendTextMessage(psid, 'Tu mensaje fue recibido, un asesor te responderá pronto 😊')
+    await enviarNotificacionSistema(psid, userInfo, texto || '[mensaje del cliente mientras espera asesor]', 'asesor')
+      .catch(e => console.error('[redes] no se pudo notificar mensaje en espera:', e.message))
+    return
+  }
+
   await db.actualizarInteraccion(psid)
   await ig.sendTypingOn(psid)
 

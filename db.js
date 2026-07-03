@@ -156,6 +156,25 @@ async function limpiarEstado(psid) {
   await pool.query('DELETE FROM estado_usuario WHERE usuario_id = ?', [clienteId])
 }
 
+// true mientras el cliente sigue "transferido a asesor" y dentro de la ventana de
+// inactividad (la IA no debe intervenir). Si ya pasó el tiempo sin actividad, libera
+// el estado automáticamente y devuelve false para que la IA vuelva a atenderlo.
+async function debeEsperarAsesor(psid, timeoutMinutos = 45) {
+  const [rows] = await pool.query(
+    `SELECT eu.transferido, TIMESTAMPDIFF(MINUTE, c.last_interaction, NOW()) AS minutos_inactivo
+     FROM estado_usuario eu JOIN clientes_wa c ON c.id = eu.usuario_id
+     WHERE c.telefono = ? LIMIT 1`,
+    [igTel(psid)]
+  )
+  const row = rows[0]
+  if (!row?.transferido) return false
+  if (row.minutos_inactivo >= timeoutMinutos) {
+    await setEstado(psid, { transferido: false })
+    return false
+  }
+  return true
+}
+
 // ── Historial de conversación ─────────────────────────────────────────────────
 
 async function getHistorial(psid, limite = 12) {
@@ -277,6 +296,7 @@ module.exports = {
   getUltimoProducto,
   setUltimoProducto,
   limpiarEstado,
+  debeEsperarAsesor,
   getHistorial,
   guardarMensaje,
   limpiarHistorialAntiguo,
