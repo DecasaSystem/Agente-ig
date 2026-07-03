@@ -56,6 +56,9 @@ function enCooldown(psid) {
   return false
 }
 
+// Cuenta imágenes/capturas seguidas que la IA no logró identificar, por cliente (se resetea al reiniciar el servidor)
+const capturasNoIdentificadas = new Map()
+
 // ── OpenAI ────────────────────────────────────────────────────────────────────
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -111,7 +114,7 @@ VISIÓN DE IMÁGENES:
 - Puedes ver imágenes cuando el cliente las comparte
 - Si el cliente comparte una publicación con imagen: descríbela brevemente y responde con la info del producto que aparece en el contexto
 - Si el cliente envía una CAPTURA DE PANTALLA de una publicación (muy común en clientes mayores que no saben usar "compartir" y en su lugar mandan un screenshot): primero intenta LEER cualquier texto visible en la imagen (nombre del producto, descripción, precio, usuario de quien publicó) — si logras leer un nombre, busca ese producto exacto con buscar_productos
-- Si NO logras leer ningún nombre en la captura, o el nombre leído no aparece en el inventario: en la MISMA respuesta (1) dile al cliente algo como "No alcanzo a ver el nombre del producto en la captura 🙏 ¿me dices si tú lo alcanzas a leer, o qué tipo de mueble es?" y (2) identifica visualmente el tipo de mueble (sofá, silla, mesa, cama, etc.) y usa buscar_productos con esa categoría para mostrarle 2-3 opciones parecidas por si alguna es la que busca
+- Si NO logras leer ningún nombre en la captura, o el nombre leído no aparece en el inventario: llama reportar_imagen_no_identificada, y en la MISMA respuesta (1) dile al cliente algo como "No alcanzo a ver el nombre del producto en la captura 🙏 ¿me dices si tú lo alcanzas a leer, o qué tipo de mueble es?" y (2) identifica visualmente el tipo de mueble (sofá, silla, mesa, cama, etc.) y usa buscar_productos con esa categoría para mostrarle 2-3 opciones parecidas por si alguna es la que busca
 - Si el cliente envía una foto de un mueble o producto (no una captura de red social): identifica qué es, busca en el inventario y ofrece ese producto o similares
 - NUNCA digas que no puedes ver imágenes — siempre tienes capacidad de visión cuando se te envía una imagen
 
@@ -301,6 +304,11 @@ const TOOLS = [
       },
       required: ['categoria'],
     },
+  },
+  {
+    name: 'reportar_imagen_no_identificada',
+    description: 'Llama esta función SIEMPRE que analices una imagen (foto o captura de pantalla) y NO puedas identificar con confianza qué producto es, incluso después de intentar leer el texto visible y clasificar el tipo de mueble. Es solo para seguimiento interno, no se le muestra al cliente tal cual.',
+    parameters: { type: 'object', properties: {} },
   },
 ]
 
@@ -504,6 +512,21 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         : `Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:\n${url}`
       await ig.sendTextMessage(psid, mensajeCatalogo)
       return `[Catálogo de ${cat} enviado exitosamente. El cliente ya recibió el enlace — haz seguimiento con una pregunta de cierre]`
+    }
+
+    case 'reportar_imagen_no_identificada': {
+      const intentos = (capturasNoIdentificadas.get(psid) ?? 0) + 1
+      capturasNoIdentificadas.set(psid, intentos)
+      if (intentos >= 2) {
+        capturasNoIdentificadas.set(psid, 0)
+        enviarNotificacionSistema(
+          psid, userInfo,
+          `El cliente ha enviado ${intentos} imágenes/capturas seguidas que la IA no pudo identificar en el inventario. Revisar la conversación y ayudarle manualmente a encontrar el producto.`,
+          'asesor'
+        ).catch(e => console.error('[redes] no se pudo notificar imagen no identificada:', e.message))
+        return 'Se avisó a un asesor porque ya van varios intentos sin identificar la imagen. Coméntale al cliente que un asesor también le va a ayudar con esto, sin dejar de mostrarle opciones parecidas.'
+      }
+      return 'Registrado. Sigue el flujo normal: pregunta si el cliente puede leer el nombre y muéstrale opciones parecidas según el tipo de mueble que identifiques.'
     }
 
     case 'solicitar_asesor': {
@@ -838,7 +861,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   const esPrimerMensaje = histPrev.length === 0
 
   try {
-    const SALUDO_IG = '¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️'
+    const SALUDO_IG = '¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️ Si nos compartes una foto o captura, cuéntanos también el nombre del producto si lo alcanzas a ver 📸'
     const esSoloSaludo = /^[¡!¿?\s]*(hola|holis|holi|holaa|buenas?|buenos\s*(dias?|tardes?|noches?)|que\s*tal|hi|hello|hey|saludos)[¡!¿?\s.]*$/i.test(mensajeAI.trim())
 
     if (esPrimerMensaje && esSoloSaludo) {
