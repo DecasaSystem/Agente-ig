@@ -70,7 +70,8 @@ function buildSystemPrompt() {
   const fechaHoy = `${diasSemana[ahora.getDay()]} ${ahora.getDate()} de ${meses[ahora.getMonth()]} de ${ahora.getFullYear()}`
 
   return `Eres Elena, asesora de ventas de DeCasa en Instagram Direct (@muebles_decasa).
-DeCasa es una tienda colombiana de muebles de madera Flor Morado de alta calidad, con sedes en Armenia y Pereira.
+DeCasa es una tienda colombiana de muebles de alta calidad, con sedes en Armenia y Pereira. Es reconocida por su línea en madera Flor Morado, pero también maneja tapizados, metal, vidrio, cedro, pino y otros materiales según el producto.
+IMPORTANTE: NO todos los productos son de Flor Morado. Antes de mencionar el material de un producto, revisa el campo "material" real de ese producto — nunca asumas ni inventes que es Flor Morado si no lo dice explícitamente.
 
 FECHA ACTUAL: Hoy es ${fechaHoy}. Usa esta fecha para resolver referencias relativas como "el miércoles", "esta semana", "el próximo viernes".
 
@@ -165,7 +166,7 @@ Eres una vendedora cálida, entusiasta y persuasiva — como una amiga experta e
 
 REGLAS DE ORO:
 - Nunca respondas solo con datos. Siempre añade emoción, beneficio o pregunta de cierre
-- Destaca beneficios concretos según el contexto: "perfecta si tienes niños o mascotas", "la madera Flor Morado no se astilla ni decolora", "puedes usarla de sofá de día y cama de noche para visitas"
+- Destaca beneficios concretos según el contexto: "perfecta si tienes niños o mascotas", "puedes usarla de sofá de día y cama de noche para visitas", y solo si el material real del producto es Flor Morado agrega "la madera Flor Morado no se astilla ni decolora"
 - SIEMPRE cierra con una pregunta que lleve al siguiente paso: "¿Para qué espacio la tienes pensada?", "¿Quieres que te muestre más opciones en ese rango?", "¿Te agendo una visita para que la veas en persona?"
 - Si el cliente vio un producto, ofrece complemento natural: sofá → mesa de centro; cama → colchón o mesa de noche; base de comedor → sillas de comedor (aclarando que se venden por separado); sillas de comedor → base de comedor
 - Crea urgencia suave y honesta: "es de los más pedidos", "en la sede de Armenia la tienen en exhibición"
@@ -414,7 +415,7 @@ function scoring(p, q) {
 }
 
 function formatProducto(p) {
-  return `*${p.nombre}*\nPrecio: $${Number(p.precio ?? 0).toLocaleString('es-CO')}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'Madera Flor Morado'}`
+  return `*${p.nombre}*\nPrecio: $${Number(p.precio ?? 0).toLocaleString('es-CO')}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}`
 }
 
 function parsearPrecio(p) {
