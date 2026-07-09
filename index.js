@@ -107,6 +107,18 @@ function enCooldown(psid) {
   return false
 }
 
+// Red de seguridad extra contra el bucle del aviso "tu mensaje fue recibido": aunque
+// ya se filtran los ecos arriba, si algo se cuela igual (otro caso no previsto de
+// Meta) esto evita que se repita en ráfaga — como mucho una vez cada 2 minutos por
+// cliente mientras sigue transferido.
+const avisosEsperaEnviados = new Map()
+function debeEnviarAvisoEspera(psid) {
+  const last = avisosEsperaEnviados.get(psid) ?? 0
+  if (Date.now() - last < 2 * 60 * 1000) return false
+  avisosEsperaEnviados.set(psid, Date.now())
+  return true
+}
+
 // Cuenta imágenes/capturas seguidas que la IA no logró identificar, por cliente (se resetea al reiniciar el servidor)
 const capturasNoIdentificadas = new Map()
 
@@ -780,15 +792,17 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   const userInfo = await ig.getUserInfo(psid)
   await db.getOrCreateClienteByPsid(psid, userInfo.username, userInfo.nombre)
 
-  // Mientras el cliente siga transferido a un asesor (dentro de la ventana de
-  // inactividad), la IA NO interviene bajo ninguna circunstancia. Se libera solo
-  // automáticamente tras 45 min sin actividad, así que si el cliente vuelve a
-  // escribir más tarde (otro día, por ejemplo) la IA lo atiende normalmente de nuevo.
+  // Mientras el cliente siga transferido a un asesor, la IA NO interviene bajo
+  // ninguna circunstancia. Se libera cuando el asesor da "Terminar" en el panel de
+  // Redes, o como red de seguridad tras varias horas de inactividad del cliente (ver
+  // db.debeEsperarAsesor) si el asesor olvidó cerrarla.
   if (await db.debeEsperarAsesor(psid)) {
     await db.actualizarInteraccion(psid)
-    await ig.sendTextMessage(psid, 'Tu mensaje fue recibido, un asesor te responderá pronto 😊')
-    await enviarNotificacionSistema(psid, userInfo, texto || '[mensaje del cliente mientras espera asesor]', 'asesor')
-      .catch(e => console.error('[redes] no se pudo notificar mensaje en espera:', e.message))
+    if (debeEnviarAvisoEspera(psid)) {
+      await ig.sendTextMessage(psid, 'Tu mensaje fue recibido, un asesor te responderá pronto 😊')
+      await enviarNotificacionSistema(psid, userInfo, texto || '[mensaje del cliente mientras espera asesor]', 'asesor')
+        .catch(e => console.error('[redes] no se pudo notificar mensaje en espera:', e.message))
+    }
     return
   }
 
@@ -1018,8 +1032,15 @@ app.post('/webhook/instagram', (req, res) => {
 
   for (const entry of body.entry ?? []) {
     for (const event of entry.messaging ?? []) {
-      // Ignorar ecos (mensajes propios del bot)
+      // Ignorar ecos (mensajes propios del bot). `is_echo` no siempre llega marcado
+      // por Instagram para mensajes enviados por un humano desde la app nativa (no vía
+      // API) — eso causó un bucle real: un asesor le escribió al cliente desde el
+      // Instagram de DeCasa, ese envío se coló como si fuera un mensaje del cliente,
+      // el bot respondió "tu mensaje fue recibido", esa respuesta también se coló, y
+      // así indefinidamente. Filtro extra: cualquier evento cuyo sender sea nuestra
+      // propia cuenta (no un cliente real) se ignora sin importar is_echo.
       if (event.message?.is_echo) continue
+      if (event.sender?.id && event.sender.id === process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID) continue
 
       const psid       = event.sender?.id
       const texto      = event.message?.text ?? null
