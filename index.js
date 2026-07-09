@@ -6,6 +6,26 @@ const crypto     = require('crypto')
 const axios      = require('axios')
 const OpenAI = require('openai')
 
+// ── Alertas de fallo ──────────────────────────────────────────────────────────
+// Sin esto, una promesa rechazada sin manejar tumba el proceso en silencio y el bot
+// queda mudo hasta que alguien lo note. Telegram es opcional: si no hay credenciales
+// configuradas, al menos queda en los logs.
+function alertar(titulo, detalle) {
+  console.error(`[ALERTA] ${titulo}:`, detalle)
+  const token  = process.env.TELEGRAM_BOT_TOKEN
+  const chatId = process.env.TELEGRAM_CHAT_ID
+  if (!token || !chatId) return
+  const texto = `🚨 <b>${titulo} — Elena Instagram</b>\n<code>${String(detalle).substring(0, 400)}</code>`
+  fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ chat_id: chatId, text: texto, parse_mode: 'HTML' }),
+  }).catch(() => {})
+}
+
+process.on('uncaughtException',  err => alertar('ERROR CRÍTICO NO CAPTURADO', err?.stack ?? err))
+process.on('unhandledRejection', err => alertar('PROMESA RECHAZADA', err?.stack ?? err))
+
 const ig      = require('./instagram')
 const db      = require('./db')
 const imgP    = require('./image-processor')
@@ -551,12 +571,26 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const tiendaId   = SEDE_TIENDA_ID[args.ubicacion] ?? null
       const motivo     = args.motivo || null
       const datosCita  = { nombre: args.nombre, ubicacion: args.ubicacion, sede_nombre: sedeNombre, dia: args.dia, hora: args.hora, motivo }
-      await enviarNotificacionSistema(
-        psid, userInfo,
-        `Cita: ${args.nombre} — ${sedeNombre} — ${args.dia} ${args.hora}${motivo ? ` — ${motivo}` : ''}`,
-        'cita',
-        { datos_cita: datosCita, tienda_id: tiendaId }
+
+      // Persistir ANTES de confirmarle al cliente. Si esto falla, no le decimos que la
+      // cita quedó agendada.
+      try {
+        await db.guardarCita(psid, datosCita)
+      } catch (e) {
+        alertar('No se pudo guardar la cita', `psid=${psid} ${e.message}`)
+        return 'No pude registrar la cita en este momento. Dile al cliente que un asesor lo contactará para confirmarla, y llama a solicitar_asesor.'
+      }
+
+      notificarEnSegundoPlano(
+        () => enviarNotificacionSistema(
+          psid, userInfo,
+          `Cita: ${args.nombre} — ${sedeNombre} — ${args.dia} ${args.hora}${motivo ? ` — ${motivo}` : ''}`,
+          'cita',
+          { datos_cita: datosCita, tienda_id: tiendaId }
+        ),
+        `agendar_cita psid=${psid}`
       )
+
       const lineaMotivo = motivo ? `\nMotivo: ${motivo}` : ''
       return `¡Listo! Tu cita quedó agendada ✅\n\n👤 *${args.nombre}*\n📍 ${sedeNombre}\n📅 ${args.dia} a las ${args.hora}${lineaMotivo}\n\nNuestro equipo te confirmará la visita pronto 😊\n\n¿Hay algo más en lo que pueda ayudarte?`
     }
@@ -606,7 +640,20 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         const resumenCarritoIG = carritoIG.map(i => `${i.producto} ×${i.cantidad || 1}`).join(', ')
         motivoFinal += `\nCarrito: ${resumenCarritoIG}`
       }
-      await enviarNotificacionSistema(psid, userInfo, motivoFinal, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined })
+
+      // Silenciar la IA YA, no cuando el asesor pulse "Tomar" en el panel: entre una
+      // cosa y la otra pueden pasar horas, y la IA le seguía conversando al cliente
+      // después de haberle dicho que lo transfería.
+      await db.marcarTransferido(psid, true)
+
+      notificarEnSegundoPlano(
+        () => enviarNotificacionSistema(psid, userInfo, motivoFinal, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined }),
+        `solicitar_asesor psid=${psid}`,
+        // Si el asesor nunca se entera, no dejemos al cliente hablando solo con nadie:
+        // se reactiva la IA para que al menos siga atendiéndolo.
+        () => db.marcarTransferido(psid, false)
+      )
+
       const aviso = avisoFueraHorario()
       return `Entendido, voy a conectarte con uno de nuestros asesores 😊${aviso ? `\n\n${aviso}` : ''}`
     }
@@ -618,13 +665,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const lista = items.map((i, idx) =>
         `${idx + 1}. *${i.producto}* — $${parsearPrecio(i.precio).toLocaleString('es-CO')} × ${i.cantidad || 1}`
       ).join('\n')
-      // Notificar al sistema de ventas cuando hay carrito activo (cliente listo para decidir)
-      enviarNotificacionSistema(
-        psid, userInfo,
-        `Carrito activo:\n${lista}\nTotal: $${total.toLocaleString('es-CO')}`,
-        'asesor',
-        { carrito: items }
-      ).catch(() => {})
+      // Antes esto notificaba a Redes: mirar el carrito no es pedir ayuda humana, y
+      // cada vistazo creaba una tarjeta "pendiente" nueva para el equipo de ventas.
+      // El pedido de verdad se notifica en confirmar_pedido; la ayuda, en solicitar_asesor.
       return `🛍️ *Tu carrito:*\n${lista}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\n¿Confirmamos la compra o quieres seguir viendo productos?`
     }
 
@@ -666,13 +709,25 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const resumen = carrito.map((i, idx) =>
         `${idx + 1}. ${i.producto} × ${i.cantidad || 1} — $${parsearPrecio(i.precio).toLocaleString('es-CO')}`
       ).join('\n')
-      // Fire-and-forget: no bloquear el flujo esperando la notificación (puede tardar 56s en retry)
-      enviarNotificacionSistema(
-        psid, userInfo,
-        `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`,
-        'pedido',
-        { carrito }
-      ).catch(e => console.error('[redes] Error notificación pedido IG:', e.message))
+
+      // Persistir ANTES de confirmarle al cliente: la notificación a Redes puede
+      // fallar, y antes era la única constancia del pedido en todo el sistema.
+      try {
+        await db.guardarPedido(psid, carrito)
+      } catch (e) {
+        alertar('No se pudo guardar el pedido', `psid=${psid} ${e.message}`)
+        return 'No pude registrar el pedido en este momento. Dile al cliente que un asesor lo contactará para completarlo, y llama a solicitar_asesor.'
+      }
+
+      notificarEnSegundoPlano(
+        () => enviarNotificacionSistema(
+          psid, userInfo,
+          `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`,
+          'pedido',
+          { carrito }
+        ),
+        `confirmar_pedido psid=${psid}`
+      )
       await setCarrito(psid, [])
       await ig.sendTextMessage(psid,
         `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
@@ -750,8 +805,23 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
     }
     console.log(`[redes] Notificación enviada — tipo: ${tipo}, psid: ${psid}`)
   } catch (e) {
-    console.error('[redes] Error enviando notificación:', e.response?.status ?? e.message)
+    // Se relanza a propósito: antes se tragaba aquí y quien llamaba nunca se enteraba,
+    // así que un pedido o una cita podían "confirmarse" al cliente sin que llegara
+    // nada al sistema de ventas. Ahora cada caller decide qué hacer con el fallo.
+    throw new Error(`[redes] notificación ${tipo} falló: ${e.response?.status ?? e.message}`)
   }
+}
+
+// Notifica sin bloquear la respuesta al cliente. La notificación a Redes puede tardar
+// hasta ~56 s (timeout de 25 s + reintento), y no tiene sentido que el cliente espere
+// eso para leer "voy a conectarte con un asesor". Si falla del todo, se alerta.
+function notificarEnSegundoPlano(promesaFn, contexto, alFallar) {
+  Promise.resolve()
+    .then(promesaFn)
+    .catch(e => {
+      alertar(`Notificación a Redes falló (${contexto})`, e.message)
+      if (alFallar) Promise.resolve().then(alFallar).catch(() => {})
+    })
 }
 
 // Horario real de atención: Lun-Vie 8am-5pm, Sáb 8am-12pm, domingo cerrado.

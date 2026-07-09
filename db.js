@@ -84,6 +84,44 @@ async function runMigrations() {
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `)
+
+    // pedidos y citas_agentes también son compartidas con el agente de WhatsApp (las
+    // crea su init-db.js). Igual que con clientes_wa, este agente debe poder crearlas
+    // por sí mismo: no puede asumir que el agente WA arrancó primero.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pedidos (
+        id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        usuario_id BIGINT UNSIGNED NOT NULL,
+        producto   VARCHAR(255) NOT NULL,
+        precio     VARCHAR(50) NOT NULL,
+        cantidad   INT DEFAULT 1,
+        estado     ENUM('confirmado','entregado','cancelado') DEFAULT 'confirmado',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (usuario_id) REFERENCES clientes_wa(id) ON DELETE CASCADE
+      )
+    `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS citas_agentes (
+        id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        usuario_id BIGINT UNSIGNED NOT NULL,
+        telefono   VARCHAR(50) NOT NULL,
+        nombre     VARCHAR(100),
+        dia        VARCHAR(60),
+        hora       VARCHAR(20),
+        razon      TEXT,
+        ubicacion  INT,
+        estado     ENUM('pendiente','confirmada','cancelada') DEFAULT 'pendiente',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (usuario_id) REFERENCES clientes_wa(id) ON DELETE CASCADE
+      )
+    `)
+    // Si la tabla ya existía (creada por el agente WA), ampliarla: un `ig_<psid>` no
+    // cabe en VARCHAR(20), y una fecha completa ("miércoles 18 de junio de 2026")
+    // tampoco cabe en el dia VARCHAR(20) original.
+    try { await pool.query('ALTER TABLE citas_agentes MODIFY telefono VARCHAR(50) NOT NULL') } catch { /* ya está */ }
+    try { await pool.query('ALTER TABLE citas_agentes MODIFY dia VARCHAR(60)') } catch { /* ya está */ }
+
     console.log('[db] migraciones OK')
   } catch (e) {
     console.error('[db] migración error:', e.message)
@@ -192,13 +230,24 @@ async function debeEsperarAsesor(psid, timeoutMinutos = 360) {
   return true
 }
 
+// Silencia (o reactiva) a la IA para este cliente. Lo llama la herramienta
+// solicitar_asesor; el panel de Redes hace lo mismo por SQL directo al pulsar
+// Tomar/Terminar (ver RedesController::silenciarBot en decasa-api).
+async function marcarTransferido(psid, transferido = true) {
+  await setEstado(psid, { transferido })
+}
+
 // ── Historial de conversación ─────────────────────────────────────────────────
 
+// Se ordena por id, no por created_at: created_at es un TIMESTAMP con resolución de
+// un segundo, así que la pregunta del cliente y la respuesta de la IA suelen caer en
+// el mismo segundo y MySQL puede devolverlas invertidas — el modelo terminaba leyendo
+// una conversación donde contestó antes de que le preguntaran.
 async function getHistorial(psid, limite = 12) {
   const [rows] = await pool.query(
     `SELECT role, content FROM ig_conversaciones
      WHERE instagram_psid = ?
-     ORDER BY created_at DESC LIMIT ?`,
+     ORDER BY id DESC LIMIT ?`,
     [psid, limite]
   )
   return rows.reverse()
@@ -295,6 +344,36 @@ async function getInventario() {
   return rows.map(r => ({ ...r, subcategoria: normalizarCategoria(r.subcategoria) }))
 }
 
+// ── Pedidos y citas ───────────────────────────────────────────────────────────
+
+// La notificación al sistema de ventas (POST /api/redes/webhook) puede fallar. Antes
+// estos dos eran la ÚNICA constancia de un pedido o una cita: si el POST fallaba, el
+// cliente veía "¡Pedido confirmado!" y no quedaba registro en ningún lado. Ahora se
+// escribe primero en la BD y la notificación es un aviso, no el sistema de registro.
+
+async function guardarPedido(psid, items) {
+  const clienteId = await _clienteId(psid)
+  if (!clienteId) return false
+  for (const item of items) {
+    await pool.query(
+      'INSERT INTO pedidos (usuario_id, producto, precio, cantidad) VALUES (?,?,?,?)',
+      [clienteId, item.producto, String(item.precio), item.cantidad || 1]
+    )
+  }
+  return true
+}
+
+async function guardarCita(psid, datos) {
+  const clienteId = await _clienteId(psid)
+  if (!clienteId) return false
+  await pool.query(
+    `INSERT INTO citas_agentes (usuario_id, telefono, nombre, dia, hora, razon, ubicacion)
+     VALUES (?,?,?,?,?,?,?)`,
+    [clienteId, igTel(psid), datos.nombre, datos.dia, datos.hora, datos.motivo ?? null, datos.ubicacion]
+  )
+  return true
+}
+
 // ── Hash de imágenes de productos ────────────────────────────────────────────
 
 async function getHashesProductos() {
@@ -331,6 +410,9 @@ module.exports = {
   setUltimoProducto,
   limpiarEstado,
   debeEsperarAsesor,
+  marcarTransferido,
+  guardarPedido,
+  guardarCita,
   getHistorial,
   guardarMensaje,
   limpiarHistorialAntiguo,
