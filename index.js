@@ -41,8 +41,14 @@ async function sincronizarHashesCatalogo() {
     hashesCatalogo = new Map(existentes.map(r => [r.producto_nombre, { hash: r.hash, imagen: r.imagen_url }]))
 
     // Solo se procesan productos nuevos o cuya foto cambió — evita redescargar
-    // todo el catálogo en cada refresco de inventario (cada 30 min).
-    const pendientes = inventario.filter(p => p.imagen && hashesCatalogo.get(p.nombre)?.imagen !== p.imagen)
+    // todo el catálogo en cada refresco de inventario (cada 30 min). Además se
+    // limita cuántos se procesan por ciclo: en un servidor con poca RAM (Render
+    // 512Mi), la primera sincronización con un catálogo grande (cientos de fotos)
+    // no debe intentar bajarlas todas de un tirón — el resto se completa en los
+    // siguientes ciclos de 30 min.
+    const LOTE_MAX = 60
+    const todosPendientes = inventario.filter(p => p.imagen && hashesCatalogo.get(p.nombre)?.imagen !== p.imagen)
+    const pendientes = todosPendientes.slice(0, LOTE_MAX)
     for (const p of pendientes) {
       try {
         const hash = await imgHash.hashDesdeUrl(p.imagen)
@@ -51,8 +57,11 @@ async function sincronizarHashesCatalogo() {
       } catch (e) {
         console.warn(`[hash-imagen] no se pudo procesar "${p.nombre}":`, e.message)
       }
+      await new Promise(r => setTimeout(r, 150))
     }
-    if (pendientes.length) console.log(`[hash-imagen] ${pendientes.length} fotos de catálogo indexadas`)
+    if (pendientes.length) {
+      console.log(`[hash-imagen] ${pendientes.length} fotos de catálogo indexadas${todosPendientes.length > LOTE_MAX ? ` (${todosPendientes.length - LOTE_MAX} quedan para el próximo ciclo)` : ''}`)
+    }
   } catch (e) {
     console.error('[hash-imagen] Error sincronizando:', e.message)
   }

@@ -2,6 +2,13 @@
 const sharp = require('sharp')
 const axios = require('axios')
 
+// En un servidor con poca RAM (Render free/starter ~512Mi), la caché interna de
+// libvips y su concurrencia por defecto (1 hilo por CPU) pueden acumular memoria
+// cuando se procesan muchas imágenes seguidas (indexar todo el catálogo). Como acá
+// solo necesitamos hashes de 8x8, no hace falta mantener nada en caché.
+sharp.cache(false)
+sharp.concurrency(1)
+
 const HASH_SIZE = 8 // grilla 8x8 -> hash de 64 bits
 
 // dHash: en escala de grises, compara cada pixel con su vecino de la derecha.
@@ -57,8 +64,17 @@ async function hashesCandidatos(buffer) {
   return hashes
 }
 
+// Para indexar el catálogo NO hace falta la foto completa (puede pesar varios MB):
+// solo necesitamos una grilla de 8x8, así que le pedimos a Cloudinary una miniatura
+// ya redimensionada. Esto es lo que evita que indexar el catálogo entero (cientos
+// de fotos) dispare un pico de memoria al descargar/decodificar imágenes de tamaño real.
+function urlMiniatura(url) {
+  if (!url || !url.includes('cloudinary.com') || !url.includes('/upload/')) return url
+  return url.replace('/upload/', '/upload/w_64,h_64,c_fit,q_auto,f_auto/')
+}
+
 async function hashDesdeUrl(url) {
-  const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 })
+  const resp = await axios.get(urlMiniatura(url), { responseType: 'arraybuffer', timeout: 15000 })
   return dHashDeBuffer(Buffer.from(resp.data))
 }
 
