@@ -796,12 +796,16 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   // ninguna circunstancia. Se libera cuando el asesor da "Terminar" en el panel de
   // Redes, o como red de seguridad tras varias horas de inactividad del cliente (ver
   // db.debeEsperarAsesor) si el asesor olvidó cerrarla.
+  //
+  // Importante: NO se vuelve a notificar al sistema de ventas en cada mensaje del
+  // cliente mientras espera — eso creaba una tarjeta "pendiente" nueva por cada
+  // mensaje, como si fuera otra solicitud sin reclamar, aunque el cliente ya estuviera
+  // siendo atendido. La solicitud original ya tiene el historial completo y el asesor
+  // puede abrir el chat directamente.
   if (await db.debeEsperarAsesor(psid)) {
     await db.actualizarInteraccion(psid)
     if (debeEnviarAvisoEspera(psid)) {
       await ig.sendTextMessage(psid, 'Tu mensaje fue recibido, un asesor te responderá pronto 😊')
-      await enviarNotificacionSistema(psid, userInfo, texto || '[mensaje del cliente mientras espera asesor]', 'asesor')
-        .catch(e => console.error('[redes] no se pudo notificar mensaje en espera:', e.message))
     }
     return
   }
