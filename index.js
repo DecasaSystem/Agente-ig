@@ -6,9 +6,10 @@ const crypto     = require('crypto')
 const axios      = require('axios')
 const OpenAI = require('openai')
 
-const ig   = require('./instagram')
-const db   = require('./db')
-const imgP = require('./image-processor')
+const ig      = require('./instagram')
+const db      = require('./db')
+const imgP    = require('./image-processor')
+const imgHash = require('./image-hash')
 
 const app  = express()
 const PORT = process.env.PORT ?? 3001
@@ -29,6 +30,47 @@ async function cargarInventario() {
     console.log(`[inventario] ${inventario.length} productos cargados`)
   } catch (e) {
     console.error('[inventario] Error cargando:', e.message)
+  }
+}
+
+// ── Hash de imágenes de catálogo (para identificar fotos reenviadas/capturadas) ─
+let hashesCatalogo = new Map() // nombre -> { hash, imagen }
+async function sincronizarHashesCatalogo() {
+  try {
+    const existentes = await db.getHashesProductos()
+    hashesCatalogo = new Map(existentes.map(r => [r.producto_nombre, { hash: r.hash, imagen: r.imagen_url }]))
+
+    // Solo se procesan productos nuevos o cuya foto cambió — evita redescargar
+    // todo el catálogo en cada refresco de inventario (cada 30 min).
+    const pendientes = inventario.filter(p => p.imagen && hashesCatalogo.get(p.nombre)?.imagen !== p.imagen)
+    for (const p of pendientes) {
+      try {
+        const hash = await imgHash.hashDesdeUrl(p.imagen)
+        await db.upsertHashProducto(p.nombre, p.imagen, hash)
+        hashesCatalogo.set(p.nombre, { hash, imagen: p.imagen })
+      } catch (e) {
+        console.warn(`[hash-imagen] no se pudo procesar "${p.nombre}":`, e.message)
+      }
+    }
+    if (pendientes.length) console.log(`[hash-imagen] ${pendientes.length} fotos de catálogo indexadas`)
+  } catch (e) {
+    console.error('[hash-imagen] Error sincronizando:', e.message)
+  }
+}
+
+// Compara una imagen entrante contra el catálogo indexado y devuelve el nombre
+// del producto si hay coincidencia confiable (misma foto, reescalada/recomprimida/
+// recortada en un screenshot), o null si no hay match.
+async function identificarProductoPorImagen(buffer) {
+  if (!hashesCatalogo.size) return null
+  try {
+    const hashesEntrada = await imgHash.hashesCandidatos(buffer)
+    const catalogoArr   = [...hashesCatalogo.entries()].map(([nombre, v]) => [nombre, v.hash])
+    const match = imgHash.mejorCoincidencia(hashesEntrada, catalogoArr)
+    return match?.nombre ?? null
+  } catch (e) {
+    console.warn('[hash-imagen] no se pudo comparar imagen entrante:', e.message)
+    return null
   }
 }
 
@@ -113,7 +155,9 @@ INSTRUCCIONES OBLIGATORIAS:
 VISIÓN DE IMÁGENES:
 - Puedes ver imágenes cuando el cliente las comparte
 - Si el cliente comparte una publicación con imagen: descríbela brevemente y responde con la info del producto que aparece en el contexto
+- Si el mensaje del sistema ya te dice "La imagen que envió el cliente coincide con este producto de nuestro catálogo": es una coincidencia automática por comparación de foto (no adivinada) — trátalo como el producto identificado con certeza, preséntaselo directamente al cliente y no le pidas que lea nada
 - Si el cliente envía una CAPTURA DE PANTALLA de una publicación (muy común en clientes mayores que no saben usar "compartir" y en su lugar mandan un screenshot): primero intenta LEER cualquier texto visible en la imagen (nombre del producto, descripción, precio, usuario de quien publicó) — si logras leer un nombre, busca ese producto exacto con buscar_productos
+- Si la captura se ve claramente recortada arriba (el encabezado o la descripción de la publicación quedan tapados por la barra de estado del celular, p.ej. "Publicacion..." cortado) dile al cliente que en vez de una captura comparta la publicación directamente con el botón "Compartir" — así sí podemos leer el nombre completo automáticamente
 - Si NO logras leer ningún nombre en la captura, o el nombre leído no aparece en el inventario: llama reportar_imagen_no_identificada, y en la MISMA respuesta (1) dile al cliente algo como "No alcanzo a ver el nombre del producto en la captura 🙏 ¿me dices si tú lo alcanzas a leer, o qué tipo de mueble es?" y (2) identifica visualmente el tipo de mueble (sofá, silla, mesa, cama, etc.) y usa buscar_productos con esa categoría para mostrarle 2-3 opciones parecidas por si alguna es la que busca
 - Si el cliente envía una foto de un mueble o producto (no una captura de red social): identifica qué es, busca en el inventario y ofrece ese producto o similares
 - NUNCA digas que no puedes ver imágenes — siempre tienes capacidad de visión cuando se te envía una imagen
@@ -318,7 +362,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   const userContent = imageBase64
     ? [
         { type: 'text', text: mensajeUsuario },
-        { type: 'image_url', image_url: { url: `data:${imageMimeType};base64,${imageBase64}`, detail: 'low' } },
+        { type: 'image_url', image_url: { url: `data:${imageMimeType};base64,${imageBase64}`, detail: 'high' } },
       ]
     : mensajeUsuario
 
@@ -542,7 +586,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         motivoFinal += `\nCarrito: ${resumenCarritoIG}`
       }
       await enviarNotificacionSistema(psid, userInfo, motivoFinal, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined })
-      const aviso = avisoHorarioTarde()
+      const aviso = avisoFueraHorario()
       return `Entendido, voy a conectarte con uno de nuestros asesores 😊${aviso ? `\n\n${aviso}` : ''}`
     }
 
@@ -689,11 +733,27 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
   }
 }
 
-function avisoHorarioTarde() {
-  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota', hour: 'numeric', hour12: false }))
-  return (h >= 21 || h < 8)
-    ? '⚠️ Ten en cuenta que ya es tarde — puede que el asesor te responda mañana, pero haremos nuestro mejor esfuerzo por atenderte. ¡Gracias por tu paciencia! 🙏'
-    : null
+// Horario real de atención: Lun-Vie 8am-5pm, Sáb 8am-12pm, domingo cerrado.
+// (La versión anterior solo miraba la hora 21-8 e ignoraba el día de la semana,
+// así que un mensaje sábado en la tarde o cualquier hora del domingo no avisaba
+// nada aunque el asesor solo fuera a responder hasta el siguiente día hábil.)
+function avisoFueraHorario() {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Bogota', weekday: 'short', hour: 'numeric', hour12: false,
+  }).formatToParts(new Date())
+  const dia  = partes.find(p => p.type === 'weekday')?.value
+  let hora   = parseInt(partes.find(p => p.type === 'hour')?.value)
+  if (hora === 24) hora = 0
+
+  const dentroHorario = dia === 'Sun'
+    ? false
+    : dia === 'Sat'
+      ? hora >= 8 && hora < 12
+      : hora >= 8 && hora < 17
+
+  return dentroHorario
+    ? null
+    : '⚠️ Ten en cuenta que estamos fuera de nuestro horario de atención (Lun-Vie 8am-5pm, Sáb 8am-12pm) — puede que el asesor te responda hasta el próximo horario hábil, pero haremos nuestro mejor esfuerzo por atenderte pronto. ¡Gracias por tu paciencia! 🙏'
 }
 
 // ── Detección de foto de cuarto ───────────────────────────────────────────────
@@ -867,6 +927,21 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     mensajeAI = `${prefijo} ${mensajeAI || 'Quiero más información'}`
   }
 
+  // Identificación por imagen: cubre el caso de un cliente que reenvía o captura
+  // una foto que YA está en nuestro propio catálogo (p.ej. un screenshot de un post
+  // donde el nombre del producto quedó cortado y no se puede leer). Si ya se
+  // encontró el producto por caption (post/reel compartido), no hace falta repetirlo.
+  if (imageBase64 && !mensajeAI.includes('Producto en inventario')) {
+    const nombreDetectado = await identificarProductoPorImagen(Buffer.from(imageBase64, 'base64'))
+    if (nombreDetectado) {
+      const resultados = buscarEnInventario(nombreDetectado, null, 1)
+      if (resultados.length) {
+        const info = formatProducto(resultados[0])
+        mensajeAI = `[La imagen que envió el cliente coincide con este producto de nuestro catálogo (misma foto o muy similar):\n${info}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
+      }
+    }
+  }
+
   if (!mensajeAI.trim()) return
 
   // Detectar primer mensaje ANTES de guardar para que el historial esté vacío
@@ -1034,9 +1109,15 @@ app.get('/delete-data', (req, res) => {
 async function startServer() {
   await db.runMigrations()
   await db.seedCatalogosDescuento()
-  await cargarInventario()
+  const refrescarInventarioYHashes = async () => {
+    await cargarInventario()
+    await sincronizarHashesCatalogo()
+  }
+  await refrescarInventarioYHashes()
   await cargarCatalogos()
-  setInterval(cargarInventario, 30 * 60 * 1000)
+  setInterval(() => {
+    refrescarInventarioYHashes().catch(e => console.error('[inventario] error refrescando:', e.message))
+  }, 30 * 60 * 1000)
   setInterval(cargarCatalogos, 30 * 60 * 1000)
 
   // Limpiar historial antiguo al arrancar y luego cada 24 horas

@@ -71,6 +71,19 @@ async function runMigrations() {
         INDEX idx_psid_created (instagram_psid, created_at)
       )
     `)
+
+    // Cache de perceptual hash (dHash) de las fotos de productos.productos, para
+    // poder identificar por comparación de imagen cuando un cliente reenvía/captura
+    // una foto que ya está en nuestro propio catálogo. No pertenece a Laravel: es
+    // solo un índice derivado que este agente reconstruye por su cuenta.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS producto_imagen_hash (
+        producto_nombre VARCHAR(150) PRIMARY KEY,
+        imagen_url      VARCHAR(500) NOT NULL,
+        hash            CHAR(16) NOT NULL,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `)
     console.log('[db] migraciones OK')
   } catch (e) {
     console.error('[db] migración error:', e.message)
@@ -278,6 +291,23 @@ async function getInventario() {
   return rows.map(r => ({ ...r, subcategoria: normalizarCategoria(r.subcategoria) }))
 }
 
+// ── Hash de imágenes de productos ────────────────────────────────────────────
+
+async function getHashesProductos() {
+  const [rows] = await pool.query(
+    'SELECT producto_nombre, imagen_url, hash FROM producto_imagen_hash'
+  )
+  return rows
+}
+
+async function upsertHashProducto(nombre, imagenUrl, hash) {
+  await pool.query(
+    `INSERT INTO producto_imagen_hash (producto_nombre, imagen_url, hash) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE imagen_url = VALUES(imagen_url), hash = VALUES(hash)`,
+    [nombre, imagenUrl, hash]
+  )
+}
+
 // ── Interno ───────────────────────────────────────────────────────────────────
 
 async function _clienteId(psid) {
@@ -304,4 +334,6 @@ module.exports = {
   getCatalogos,
   seedCatalogosDescuento,
   consultarStock,
+  getHashesProductos,
+  upsertHashProducto,
 }
