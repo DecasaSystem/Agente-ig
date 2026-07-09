@@ -172,7 +172,11 @@ async function limpiarEstado(psid) {
 // true mientras el cliente sigue "transferido a asesor" y dentro de la ventana de
 // inactividad (la IA no debe intervenir). Si ya pasó el tiempo sin actividad, libera
 // el estado automáticamente y devuelve false para que la IA vuelva a atenderlo.
-async function debeEsperarAsesor(psid, timeoutMinutos = 45) {
+// Es una red de seguridad para cuando el asesor olvida dar "Terminar" en el panel de
+// Redes (que es el que normalmente libera este flag, ver RedesController en
+// decasa-api) — 45 min sería demasiado corto y podría reactivar la IA mientras el
+// asesor sigue trabajando el caso sin que el cliente le haya vuelto a escribir.
+async function debeEsperarAsesor(psid, timeoutMinutos = 360) {
   const [rows] = await pool.query(
     `SELECT eu.transferido, TIMESTAMPDIFF(MINUTE, c.last_interaction, NOW()) AS minutos_inactivo
      FROM estado_usuario eu JOIN clientes_wa c ON c.id = eu.usuario_id
