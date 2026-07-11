@@ -143,14 +143,14 @@ async function cargarCatalogos() {
 }
 
 // ── Buffer de ráfagas + cola serializada por PSID ─────────────────────────────
-// En Instagram la gente escribe en varios mensajes seguidos ("Hola" / "quiero una
-// cama" / "de 2 metros"). El enCooldown anterior DESCARTABA en silencio el 2º y el 3º.
-// Ahora:
-//  - los mensajes de solo texto se agrupan (debounce) y se procesan como uno solo;
-//  - todo el procesamiento de un mismo PSID se serializa, para que no corran dos
-//    runAgentLoop en paralelo con escrituras de historial intercaladas.
-const DEBOUNCE_MS = 2500
-const buffers = new Map() // psid -> { textos: [], timer }
+// En Instagram la gente manda varias cosas seguidas ("Hola" / "quiero una cama" / "de
+// 2 metros", o comparte una publicación y luego escribe "Precio?"). Se agrupa TODA la
+// ráfaga (texto + adjunto + respuesta a historia) en un solo turno con un debounce, y
+// se procesa una sola vez → una sola respuesta. Además el procesamiento de un mismo
+// PSID se serializa, para que no corran dos runAgentLoop en paralelo con escrituras de
+// historial intercaladas.
+const DEBOUNCE_MS = 2800
+const buffers = new Map() // psid -> { textos, adjuntos, esStory, storyUrl, storyId, timer }
 const colas   = new Map() // psid -> Promise (cadena de ejecución serializada)
 
 // Encadena la tarea después de la última del mismo PSID (mutex por cliente).
@@ -165,35 +165,33 @@ function encolar(psid, tarea) {
 const correr = (psid, ...args) =>
   handleMessage(psid, ...args).catch(e => alertar('handleMessage falló', `psid=${psid} ${e.message}`))
 
-// Punto de entrada desde el webhook. Decide entre agrupar texto o procesar ya.
+// Punto de entrada desde el webhook. Acumula todo lo que llegue en la ventana de
+// debounce y lo procesa como un solo turno.
 function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) {
-  const soloTexto = texto && !adjuntos?.length && !esStoryReply
-
-  if (soloTexto) {
-    let buf = buffers.get(psid)
-    if (!buf) { buf = { textos: [], timer: null }; buffers.set(psid, buf) }
-    buf.textos.push(texto)
-    if (buf.timer) clearTimeout(buf.timer)
-    buf.timer = setTimeout(() => {
-      buffers.delete(psid)
-      encolar(psid, () => correr(psid, buf.textos.join('\n'), null, false, null, null))
-    }, DEBOUNCE_MS)
-    return
+  let buf = buffers.get(psid)
+  if (!buf) {
+    buf = { textos: [], adjuntos: null, esStory: false, storyUrl: null, storyId: null, timer: null }
+    buffers.set(psid, buf)
   }
 
-  // Mensaje con imagen / historia / adjunto: primero vaciar el texto pendiente (para
-  // no perder el orden), luego procesar este.
-  const buf = buffers.get(psid)
-  let textoPrevio = ''
-  if (buf) {
-    if (buf.timer) clearTimeout(buf.timer)
+  if (texto) buf.textos.push(texto)
+  // Si en la ráfaga llega más de un adjunto, se queda con el último (caso raro; lo
+  // normal es una sola imagen o publicación por turno).
+  if (adjuntos?.length) buf.adjuntos = adjuntos
+  if (esStoryReply) { buf.esStory = true; buf.storyUrl = storyUrl; buf.storyId = storyId }
+
+  if (buf.timer) clearTimeout(buf.timer)
+  buf.timer = setTimeout(() => {
     buffers.delete(psid)
-    textoPrevio = buf.textos.join('\n')
-  }
-  encolar(psid, async () => {
-    if (textoPrevio) await correr(psid, textoPrevio, null, false, null, null)
-    await correr(psid, texto, adjuntos, esStoryReply, storyUrl, storyId)
-  })
+    encolar(psid, () => correr(
+      psid,
+      buf.textos.join('\n') || null,
+      buf.adjuntos,
+      buf.esStory,
+      buf.storyUrl,
+      buf.storyId,
+    ))
+  }, DEBOUNCE_MS)
 }
 
 // Menú de respuestas rápidas que acompaña al saludo inicial.
