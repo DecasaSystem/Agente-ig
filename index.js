@@ -294,7 +294,7 @@ INSTRUCCIONES OBLIGATORIAS:
 VISIÓN DE IMÁGENES:
 - Puedes ver imágenes cuando el cliente las comparte
 - Si el cliente comparte una publicación con imagen: descríbela brevemente y responde con la info del producto que aparece en el contexto
-- Si el mensaje del sistema ya te dice "La imagen que envió el cliente coincide con este producto de nuestro catálogo": es una coincidencia automática por comparación de foto (no adivinada) — trátalo como el producto identificado con certeza, preséntaselo directamente al cliente y no le pidas que lea nada
+- Si el mensaje del sistema empieza con "[COINCIDENCIA POR FOTO": es el producto identificado por comparación de imagen. Preséntalo con el nombre, precio, medidas y material EXACTOS que te da ese bloque, palabra por palabra. NUNCA cambies ni acortes el nombre, NUNCA inventes medidas ni material: si dice "consultar", dile al cliente que ese dato lo confirma un asesor. No describas lo que "ves" en la imagen si contradice esos datos — el catálogo manda.
 - Si el cliente envía una CAPTURA DE PANTALLA de una publicación (muy común en clientes mayores que no saben usar "compartir" y en su lugar mandan un screenshot): primero intenta LEER cualquier texto visible en la imagen (nombre del producto, descripción, precio, usuario de quien publicó) — si logras leer un nombre, busca ese producto exacto con buscar_productos
 - Si la captura se ve claramente recortada arriba (el encabezado o la descripción de la publicación quedan tapados por la barra de estado del celular, p.ej. "Publicacion..." cortado) dile al cliente que en vez de una captura comparta la publicación directamente con el botón "Compartir" — así sí podemos leer el nombre completo automáticamente
 - Si NO logras leer ningún nombre en la captura, o el nombre leído no aparece en el inventario: llama reportar_imagen_no_identificada, y en la MISMA respuesta (1) dile al cliente algo como "No alcanzo a ver el nombre del producto en la captura 🙏 ¿me dices si tú lo alcanzas a leer, o qué tipo de mueble es?" y (2) identifica visualmente el tipo de mueble (sofá, silla, mesa, cama, etc.) y usa buscar_productos con esa categoría para mostrarle 2-3 opciones parecidas por si alguna es la que busca
@@ -1246,10 +1246,15 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   if (imageBase64 && !mensajeAI.includes('Producto en inventario')) {
     const nombreDetectado = await identificarProductoPorImagen(Buffer.from(imageBase64, 'base64'))
     if (nombreDetectado) {
-      const resultados = buscarEnInventario(nombreDetectado, null, 1)
-      if (resultados.length) {
-        const info = formatProducto(resultados[0])
-        mensajeAI = `[La imagen que envió el cliente coincide con este producto de nuestro catálogo (misma foto o muy similar):\n${info}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
+      // Usar el producto EXACTO que matcheó el hash (no re-buscar con fuzzy, que puede
+      // derivar a otro producto distinto).
+      const prod = inventario.find(p => p.nombre === nombreDetectado) ?? buscarEnInventario(nombreDetectado, null, 1)[0]
+      if (prod) {
+        const info = formatProducto(prod)
+        // Instrucción estricta: sin esto el modelo tiende a renombrar el producto y a
+        // inventar medidas/material (llenando los campos "consultar" con valores
+        // plausibles), sobre todo cuando además está "viendo" la imagen.
+        mensajeAI = `[COINCIDENCIA POR FOTO. La imagen coincide con este producto del catálogo. Usa EXACTAMENTE estos datos, textualmente:\n${info}\nREGLAS: no cambies ni acortes el nombre; no inventes medidas ni material; si un campo dice "consultar", dile al cliente que ese dato lo confirma un asesor. La imagen es secundaria: manda el dato del catálogo, no lo que creas ver.]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
       }
     }
   }
