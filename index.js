@@ -21,6 +21,12 @@ const imgHash = require('./image-hash')
 const app  = express()
 const PORT = process.env.PORT ?? 3001
 
+// Registro de eventos para métricas, fire-and-forget: nunca debe romper el flujo ni
+// hacer esperar al cliente.
+function evento(psid, tipo, detalle) {
+  db.registrarEvento(psid, tipo, detalle).catch(e => console.error('[metricas] evento falló:', e.message))
+}
+
 // ── Raw body para validar firma Meta ─────────────────────────────────────────
 app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf }
@@ -63,6 +69,12 @@ function validarPrecios(psid, texto, preciosVistos) {
   if (sospechosos.length) {
     alertar('Posible precio inventado por Elena', `psid=${psid} precios=${sospechosos.join(', ')} | msg="${String(texto).substring(0, 160)}"`)
   }
+  return sospechosos // devuelto para poder testearlo; el caller no necesita usarlo
+}
+
+// Precios válidos conocidos, inyectable para tests (en producción lo llena cargarInventario).
+function setPreciosInventarioParaPruebas(nums) {
+  preciosInventario = new Set(nums)
 }
 
 // ── Hash de imágenes de catálogo (para identificar fotos reenviadas/capturadas) ─
@@ -565,6 +577,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
     }
   }
 
+  evento(psid, 'sin_resolver', 'limite de rondas')
   await enviarNotificacionSistema(psid, userInfo, 'La IA no pudo resolver la solicitud tras varios intentos (límite de rondas de herramientas alcanzado). Revisar conversación.', 'asesor').catch(err => console.error('[redes] no se pudo notificar límite de rondas:', err.message))
   return 'Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏'
 }
@@ -655,6 +668,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
 
     case 'buscar_productos': {
       const resultados = buscarEnInventario(args.consulta, args.categoria ?? null, args.limite ?? 5)
+      evento(psid, 'busqueda', args.consulta)
       if (!resultados.length) return `No encontré "${args.consulta}" en el inventario. ¿Puedes describir mejor lo que buscas?`
       return resultados.map(formatProducto).join('\n\n')
     }
@@ -674,6 +688,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const resultado = buscarEnInventario(args.nombre_producto)[0]
       if (!resultado) return `No encontré ese producto. ¿Puedes darme más detalles?`
       await db.setUltimoProducto(psid, { nombre: resultado.nombre, imagen: resultado.imagen ?? null, ts: Date.now() })
+      evento(psid, 'producto_visto', resultado.nombre)
       if (resultado.imagen) {
         await ig.sendImageMessage(psid, resultado.imagen)
         // Segunda foto del producto si existe (otro ángulo/detalle): antes se ignoraba.
@@ -704,6 +719,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       }))
       const ok = await ig.sendCarousel(psid, elementos)
       await db.setUltimoProducto(psid, { nombre: encontrados[0].nombre, imagen: encontrados[0].imagen ?? null, ts: Date.now() })
+      for (const p of encontrados) evento(psid, 'producto_visto', p.nombre)
       if (!ok) {
         // Degradación elegante: si el carrusel falla, el modelo lo presenta en texto.
         return `No pude enviar el carrusel visual. Preséntale estos productos en texto:\n${encontrados.map(formatProducto).join('\n\n')}`
@@ -746,6 +762,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         alertar('No se pudo guardar la cita', `psid=${psid} ${e.message}`)
         return 'No pude registrar la cita en este momento. Dile al cliente que un asesor lo contactará para confirmarla, y llama a solicitar_asesor.'
       }
+      evento(psid, 'cita', `${sedeNombre} — ${args.dia} ${args.hora}`)
 
       notificarRedes(
         psid, userInfo,
@@ -779,6 +796,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     case 'reportar_imagen_no_identificada': {
       const intentos = (capturasNoIdentificadas.get(psid) ?? 0) + 1
       capturasNoIdentificadas.set(psid, intentos)
+      evento(psid, 'imagen_no_identificada')
       if (intentos >= 2) {
         capturasNoIdentificadas.set(psid, 0)
         enviarNotificacionSistema(
@@ -808,6 +826,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // cosa y la otra pueden pasar horas, y la IA le seguía conversando al cliente
       // después de haberle dicho que lo transfería.
       await db.marcarTransferido(psid, true)
+      evento(psid, 'transferencia', args.tipo)
 
       notificarRedes(
         psid, userInfo, motivoFinal, args.tipo,
@@ -881,6 +900,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         alertar('No se pudo guardar el pedido', `psid=${psid} ${e.message}`)
         return 'No pude registrar el pedido en este momento. Dile al cliente que un asesor lo contactará para completarlo, y llama a solicitar_asesor.'
       }
+      evento(psid, 'pedido', `$${total.toLocaleString('es-CO')}`)
 
       notificarRedes(
         psid, userInfo,
@@ -1241,6 +1261,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   // Detectar primer mensaje ANTES de guardar para que el historial esté vacío
   const histPrev       = await db.getHistorial(psid, 1)
   const esPrimerMensaje = histPrev.length === 0
+  if (esPrimerMensaje) evento(psid, 'conversacion')
 
   try {
     const SALUDO_IG = '¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️ Si nos compartes una foto o captura, cuéntanos también el nombre del producto si lo alcanzas a ver 📸'
@@ -1418,6 +1439,21 @@ app.get('/debug-stock', async (req, res) => {
   }
 })
 
+// ── Métricas de negocio ───────────────────────────────────────────────────────
+// Protegido con el mismo DECASA_AGENT_TOKEN (header X-Agent-Token o ?token=). Sin
+// token configurado, se rechaza para no exponer datos.
+app.get('/stats', async (req, res) => {
+  const token = process.env.DECASA_AGENT_TOKEN
+  const dado  = req.headers['x-agent-token'] ?? req.query.token
+  if (!token || dado !== token) return res.status(401).json({ error: 'no autorizado' })
+  try {
+    const dias = Math.min(Math.max(parseInt(req.query.dias ?? '30') || 30, 1), 365)
+    res.json(await db.getMetricas(dias))
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ── Páginas legales requeridas por Meta ───────────────────────────────────────
 app.get('/privacy', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
@@ -1454,8 +1490,18 @@ app.get('/delete-data', (req, res) => {
   </body></html>`)
 })
 
+// Avisa si el token que protege /stats y el webhook de Redes es débil o ausente.
+function revisarSeguridad() {
+  const t = process.env.DECASA_AGENT_TOKEN
+  const debiles = ['', 'decasa_agent_2026', 'changeme', 'token', 'secret']
+  if (!t || debiles.includes(t)) {
+    console.warn('[seguridad] ⚠️ DECASA_AGENT_TOKEN ausente o débil. Rótalo por un valor largo y aleatorio (ver AGENT.md).')
+  }
+}
+
 // ── Inicio ────────────────────────────────────────────────────────────────────
 async function startServer() {
+  revisarSeguridad()
   await db.runMigrations()
   await db.seedCatalogosDescuento()
   const refrescarInventarioYHashes = async () => {
@@ -1484,4 +1530,15 @@ async function startServer() {
   })
 }
 
-startServer().catch(e => { console.error(e); process.exit(1) })
+// Solo arranca el servidor cuando se ejecuta directamente (node index.js). Al
+// requerirlo desde los tests, NO arranca — así se pueden probar las funciones puras
+// sin abrir el puerto ni conectar a la BD.
+if (require.main === module) {
+  startServer().catch(e => { console.error(e); process.exit(1) })
+}
+
+// Superficie exportada para tests unitarios (funciones puras / con inyección).
+module.exports = {
+  extraerPrecios, validarPrecios, setPreciosInventarioParaPruebas,
+  comentarioEsConsulta, payloadAIntent, normalize,
+}

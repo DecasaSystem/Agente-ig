@@ -133,6 +133,19 @@ async function runMigrations() {
       )
     `)
 
+    // Eventos para métricas de negocio (conversaciones, transferencias, citas,
+    // pedidos, productos vistos, consultas sin resolver). Tabla propia del agente.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ig_eventos (
+        id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        psid       VARCHAR(50),
+        tipo       VARCHAR(40) NOT NULL,
+        detalle    VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_tipo_created (tipo, created_at)
+      )
+    `)
+
     // Comentarios ya respondidos (respuesta privada al DM). Meta permite una sola
     // respuesta privada por comentario; esto garantiza no intentarlo dos veces aunque
     // el webhook reentregue el evento.
@@ -436,6 +449,57 @@ async function limpiarMidsAntiguos(dias = 2) {
   if (res.affectedRows) console.log(`[db] limpieza mids: ${res.affectedRows} eliminados`)
 }
 
+// ── Métricas ──────────────────────────────────────────────────────────────────
+
+async function registrarEvento(psid, tipo, detalle = null) {
+  await pool.query(
+    'INSERT INTO ig_eventos (psid, tipo, detalle) VALUES (?, ?, ?)',
+    [psid ?? null, tipo, detalle ? String(detalle).substring(0, 255) : null]
+  )
+}
+
+async function getMetricas(dias = 30) {
+  const [totales] = await pool.query(
+    `SELECT tipo, COUNT(*) AS n FROM ig_eventos
+     WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+     GROUP BY tipo`,
+    [dias]
+  )
+  const [topProductos] = await pool.query(
+    `SELECT detalle AS nombre, COUNT(*) AS veces FROM ig_eventos
+     WHERE tipo = 'producto_visto' AND detalle IS NOT NULL
+       AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+     GROUP BY detalle ORDER BY veces DESC LIMIT 10`,
+    [dias]
+  )
+  const [topBusquedas] = await pool.query(
+    `SELECT detalle AS termino, COUNT(*) AS veces FROM ig_eventos
+     WHERE tipo = 'busqueda' AND detalle IS NOT NULL
+       AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+     GROUP BY detalle ORDER BY veces DESC LIMIT 10`,
+    [dias]
+  )
+  const [clientes] = await pool.query(
+    `SELECT COUNT(DISTINCT psid) AS n FROM ig_eventos
+     WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)`,
+    [dias]
+  )
+
+  const totalesObj = {}
+  for (const r of totales) totalesObj[r.tipo] = r.n
+  const conversaciones = totalesObj.conversacion ?? 0
+  const pedidos        = totalesObj.pedido ?? 0
+
+  return {
+    dias,
+    clientes_unicos: clientes[0].n,
+    totales: totalesObj,
+    tasa_conversion: conversaciones ? +(pedidos / conversaciones * 100).toFixed(1) : 0,
+    top_productos: topProductos,
+    top_busquedas: topBusquedas,
+  }
+}
+
 // true si el comentario es nuevo (hay que responderlo), false si ya se respondió.
 async function registrarComentario(commentId) {
   try {
@@ -524,6 +588,8 @@ module.exports = {
   registrarMid,
   limpiarMidsAntiguos,
   registrarComentario,
+  registrarEvento,
+  getMetricas,
   encolarNotificacion,
   getNotificacionesPendientes,
   eliminarNotificacion,

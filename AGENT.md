@@ -185,14 +185,32 @@ Los dos pendientes son más invasivos (una llamada extra a OpenAI para resumir/e
 > 3. Límites de Meta: una sola respuesta privada por comentario y dentro de los 7 días. El código ya respeta el "una sola" con `ig_comentarios_respondidos`.
 > Mientras no se active la suscripción a `comments`, esta parte simplemente no recibe eventos (el resto funciona igual).
 
-### Fase 5 — Operación y negocio
+### Fase 5 — Operación y negocio ✅ *(núcleo hecho)*
 *Objetivo: poder mejorarlo con datos, no con intuición.*
 
-- [ ] Métricas: conversaciones, transferencias, citas, pedidos, tasa de conversión, productos más preguntados, consultas sin resolver.
-- [ ] Panel de esas métricas dentro del sistema de ventas.
-- [ ] Tests de las herramientas y del flujo de transferencia (Jest, como en el agente de WhatsApp).
-- [ ] Usuario de BD restringido por agente (no `avnadmin`) y `AGENT_TOKEN` rotado y fuerte.
-- [ ] Logs estructurados con ID de conversación.
+- [x] Métricas: tabla `ig_eventos` + `registrarEvento` (fire-and-forget). Se emiten eventos de `conversacion`, `busqueda`, `producto_visto`, `transferencia`, `cita`, `pedido`, `imagen_no_identificada`, `sin_resolver`.
+- [x] Endpoint `GET /stats` (protegido con `DECASA_AGENT_TOKEN` por header `X-Agent-Token` o `?token=`): totales por tipo, clientes únicos, tasa de conversión (pedidos/conversaciones), top productos vistos y top búsquedas. Parámetro `?dias=N` (default 30).
+- [x] Tests unitarios de las funciones puras (`tests/unit.test.js`) con el runner integrado de Node (`npm test` → `node --test`), sin dependencia de Jest. Cubre extracción/validación de precios, clasificación de comentarios, mapeo de payloads y normalización. `index.js` solo arranca el servidor si es el módulo principal, para poder requerirlo desde los tests.
+- [x] Aviso de seguridad al arrancar (`revisarSeguridad`) si `DECASA_AGENT_TOKEN` está ausente o es débil/por defecto.
+- [ ] Panel de métricas dentro del sistema de ventas (frontend en `decasa-app` — pendiente, es cross-repo; hoy los datos se consultan por `/stats`).
+- [ ] Rotar `AGENT_TOKEN` y crear un usuario de BD restringido por agente — **requieren tu acción**, ver abajo.
+- [ ] Logs estructurados con ID de conversación (pendiente; hoy los logs clave ya incluyen el `psid`).
+
+> **Acciones de seguridad pendientes (no se pueden hacer solo desde el código):**
+>
+> **1. Rotar `AGENT_TOKEN` / `DECASA_AGENT_TOKEN`.** Hoy es `decasa_agent_2026` (adivinable) y protege el webhook de Redes y ahora `/stats`. Genera uno fuerte:
+> ```
+> node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+> ```
+> Y ponlo, con el MISMO valor, en tres lugares: `AGENT_TOKEN` en `decasa-api` (Laravel), `DECASA_AGENT_TOKEN` en el agente de Instagram y en el de WhatsApp. Hazlo en un solo despliegue coordinado para que no queden desincronizados.
+>
+> **2. Usuario de BD restringido.** Los tres proyectos usan `avnadmin` (superusuario de Aiven). Crea un usuario con permisos mínimos y cámbialo en los `.env`:
+> ```sql
+> CREATE USER 'decasa_agente'@'%' IDENTIFIED BY '<clave-fuerte>';
+> GRANT SELECT, INSERT, UPDATE, DELETE ON defaultdb.* TO 'decasa_agente'@'%';
+> FLUSH PRIVILEGES;
+> ```
+> (Sin `DROP`/`ALTER`/`CREATE` de superusuario. Nota: los agentes hacen `CREATE TABLE IF NOT EXISTS`/`ALTER` en el arranque; si quieres quitarle también DDL, corre las migraciones una vez con `avnadmin` y luego dale al usuario solo DML.)
 
 ---
 
