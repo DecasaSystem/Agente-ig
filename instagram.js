@@ -1,6 +1,7 @@
 'use strict'
 require('dotenv').config()
 const axios = require('axios')
+const { alertar, conReintentos } = require('./alertas')
 
 const BASE  = 'https://graph.instagram.com/v22.0'
 const TOKEN = () => process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
@@ -65,23 +66,35 @@ async function downloadMediaToBuffer(mediaUrl) {
 // ── Interno ───────────────────────────────────────────────────────────────────
 
 async function _send(psid, message) {
+  const enviar = () => axios.post(`${BASE}/me/messages`,
+    { recipient: { id: psid }, message },
+    { params: { access_token: TOKEN() }, timeout: 10000 }
+  )
+
   try {
-    await axios.post(`${BASE}/me/messages`, {
-      recipient: { id: psid },
-      message,
-    }, {
-      params: { access_token: TOKEN() },
-      timeout: 10000,
+    await conReintentos(enviar, {
+      intentos: 3,
+      baseMs:   1500,
+      contexto: `IG _send psid=${psid}`,
+      // Reintentar solo lo transitorio: rate limit (613), 5xx, o red caída. No tiene
+      // sentido reintentar un token expirado o falta de permisos.
+      esReintentable: e => {
+        const code   = e.response?.data?.error?.code
+        const status = e.response?.status
+        return code === 613 || (status >= 500 && status < 600) || !e.response
+      },
     })
   } catch (e) {
     const err = e.response?.data?.error
     console.error('[IG] sendMessage error:', err ?? e.message)
-    // 190 = token expirado, 10 = sin permisos, 613 = rate limit
-    if (err?.code === 613) {
-      await new Promise(r => setTimeout(r, 3000))
-      await axios.post(`${BASE}/me/messages`, { recipient: { id: psid }, message },
-        { params: { access_token: TOKEN() } })
+    // 190 = token expirado / inválido: el bot queda mudo indefinidamente hasta que se
+    // renueve el token de larga duración (~60 días). Hay que enterarse ya, no descubrirlo
+    // por clientes sin respuesta.
+    if (err?.code === 190) {
+      alertar('Token de Instagram inválido/expirado (code 190)', err.message ?? 'sin detalle')
     }
+    // No relanzar: un fallo de envío no debe tumbar el manejo del mensaje. El caller
+    // decide si el texto era crítico.
   }
 }
 

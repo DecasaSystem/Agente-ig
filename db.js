@@ -122,6 +122,34 @@ async function runMigrations() {
     try { await pool.query('ALTER TABLE citas_agentes MODIFY telefono VARCHAR(50) NOT NULL') } catch { /* ya está */ }
     try { await pool.query('ALTER TABLE citas_agentes MODIFY dia VARCHAR(60)') } catch { /* ya está */ }
 
+    // Deduplicación durable de eventos de Meta. Antes vivía solo en un Set en memoria:
+    // tras cada redeploy de Render (frecuentes) un reintento de Meta podía re-procesar
+    // un mensaje ya contestado, y con más de una instancia no funcionaba en absoluto.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ig_mids_procesados (
+        mid        VARCHAR(180) PRIMARY KEY,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_created (created_at)
+      )
+    `)
+
+    // Cola durable de notificaciones al sistema de ventas. Si el POST a Redes falla,
+    // el pedido/cita ya está en BD, pero la tarjeta del asesor no existía y nadie la
+    // reintentaba: había que crearla a mano.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ig_notificaciones_pendientes (
+        id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        psid          VARCHAR(50) NOT NULL,
+        tipo          VARCHAR(30) NOT NULL,
+        payload       JSON NOT NULL,
+        intentos      INT DEFAULT 0,
+        ultimo_error  TEXT,
+        proximo_envio DATETIME NOT NULL,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_proximo (proximo_envio)
+      )
+    `)
+
     console.log('[db] migraciones OK')
   } catch (e) {
     console.error('[db] migración error:', e.message)
@@ -374,6 +402,63 @@ async function guardarCita(psid, datos) {
   return true
 }
 
+// ── Deduplicación de eventos de Meta ─────────────────────────────────────────
+
+// Devuelve true si el mid es nuevo (hay que procesarlo), false si ya se procesó.
+// Ante un fallo de BD preferimos procesar (arriesgar un duplicado) antes que perder
+// el mensaje del cliente en silencio.
+async function registrarMid(mid) {
+  try {
+    await pool.query('INSERT INTO ig_mids_procesados (mid) VALUES (?)', [mid])
+    return true
+  } catch (e) {
+    if (e.code === 'ER_DUP_ENTRY') return false
+    console.error('[db] registrarMid falló, se procesa igual:', e.message)
+    return true
+  }
+}
+
+async function limpiarMidsAntiguos(dias = 2) {
+  const [res] = await pool.query(
+    'DELETE FROM ig_mids_procesados WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)', [dias]
+  )
+  if (res.affectedRows) console.log(`[db] limpieza mids: ${res.affectedRows} eliminados`)
+}
+
+// ── Cola de notificaciones pendientes ────────────────────────────────────────
+
+async function encolarNotificacion(psid, tipo, payload, retrasoSegundos = 60) {
+  await pool.query(
+    `INSERT INTO ig_notificaciones_pendientes (psid, tipo, payload, proximo_envio)
+     VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND))`,
+    [psid, tipo, JSON.stringify(payload), retrasoSegundos]
+  )
+}
+
+async function getNotificacionesPendientes(limite = 10) {
+  const [rows] = await pool.query(
+    `SELECT id, psid, tipo, payload, intentos FROM ig_notificaciones_pendientes
+     WHERE proximo_envio <= NOW() ORDER BY proximo_envio ASC LIMIT ?`,
+    [limite]
+  )
+  return rows.map(r => ({ ...r, payload: typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload }))
+}
+
+async function eliminarNotificacion(id) {
+  await pool.query('DELETE FROM ig_notificaciones_pendientes WHERE id = ?', [id])
+}
+
+// Backoff exponencial entre reintentos: 2, 4, 8, 16... minutos.
+async function reprogramarNotificacion(id, intentos, error) {
+  const minutos = Math.min(2 ** intentos, 120)
+  await pool.query(
+    `UPDATE ig_notificaciones_pendientes
+     SET intentos = ?, ultimo_error = ?, proximo_envio = DATE_ADD(NOW(), INTERVAL ? MINUTE)
+     WHERE id = ?`,
+    [intentos, String(error).substring(0, 500), minutos, id]
+  )
+}
+
 // ── Hash de imágenes de productos ────────────────────────────────────────────
 
 async function getHashesProductos() {
@@ -413,6 +498,12 @@ module.exports = {
   marcarTransferido,
   guardarPedido,
   guardarCita,
+  registrarMid,
+  limpiarMidsAntiguos,
+  encolarNotificacion,
+  getNotificacionesPendientes,
+  eliminarNotificacion,
+  reprogramarNotificacion,
   getHistorial,
   guardarMensaje,
   limpiarHistorialAntiguo,

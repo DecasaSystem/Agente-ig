@@ -143,16 +143,19 @@ Cada conversación arranca de cero: nombre, presupuesto y preferencias ya dichos
 
 Pendiente de esta fase, movido a Fase 2: **cola durable de reintentos** para las notificaciones a Redes. Hoy, si el POST falla tras el reintento, el dato ya está a salvo en BD y se emite una alerta, pero la tarjeta no se vuelve a intentar sola — hay que crearla a mano.
 
-### Fase 2 — Robustez
+### Fase 2 — Robustez ✅ *(hecha)*
 *Objetivo: que aguante ráfagas, reinicios y fallos de red.*
 
-- [ ] Buffer de mensajes por PSID: esperar 2-4 s, concatenar y procesar una vez (reemplaza el descarte de `enCooldown`).
-- [ ] Cola serializada por PSID: un `runAgentLoop` a la vez por cliente.
-- [ ] Mover `midsProcesados` y demás estado efímero a BD (o Redis si se escala).
-- [ ] Cola durable de reintentos para las notificaciones a Redes (heredado de Fase 1).
-- [ ] Reintentos con backoff para OpenAI (429/5xx) y para Graph API.
-- [ ] Alerta cuando el token de Instagram esté por vencer o devuelva código 190.
-- [ ] Validar día y hora en `agendar_cita` contra el horario comercial.
+- [x] Buffer de mensajes por PSID: debounce de 2,5 s y concatenación (`recibirMensaje`), en vez del descarte silencioso de `enCooldown`.
+- [x] Cola serializada por PSID (`encolar`): un `handleMessage`/`runAgentLoop` a la vez por cliente.
+- [x] `midsProcesados` movido a BD (`ig_mids_procesados`), con limpieza a 2 días. Sobrevive redeploys y sirve con más de una instancia.
+- [x] Cola durable de reintentos para Redes (`ig_notificaciones_pendientes` + worker `procesarColaNotificaciones`, backoff 2→120 min, descarta tras 8 intentos con alerta).
+- [x] Reintentos con backoff para Graph API en `_send` (`conReintentos` en `alertas.js`): solo reintenta lo transitorio (613, 5xx, red caída).
+- [x] Alerta cuando Graph API devuelve código 190 (token inválido/expirado).
+- [x] Validar día y hora en `agendar_cita` contra el horario comercial (Lun-Vie 8-17, Sáb 8-12, domingo cerrado).
+- [x] Caché de `getUserInfo` por PSID (TTL 6 h), en vez de una llamada a Graph API por mensaje.
+
+Nota: los reintentos con backoff para OpenAI (429/5xx) quedaron pendientes; hoy un fallo de OpenAI cae al `catch` de `handleMessage`, que avisa al cliente y notifica a un asesor. Se puede envolver `runAgentLoop` con `conReintentos` en Fase 3.
 
 ### Fase 3 — Calidad de la conversación
 *Objetivo: que Elena venda mejor y no invente.*

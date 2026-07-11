@@ -6,23 +6,10 @@ const crypto     = require('crypto')
 const axios      = require('axios')
 const OpenAI = require('openai')
 
-// ── Alertas de fallo ──────────────────────────────────────────────────────────
-// Sin esto, una promesa rechazada sin manejar tumba el proceso en silencio y el bot
-// queda mudo hasta que alguien lo note. Telegram es opcional: si no hay credenciales
-// configuradas, al menos queda en los logs.
-function alertar(titulo, detalle) {
-  console.error(`[ALERTA] ${titulo}:`, detalle)
-  const token  = process.env.TELEGRAM_BOT_TOKEN
-  const chatId = process.env.TELEGRAM_CHAT_ID
-  if (!token || !chatId) return
-  const texto = `🚨 <b>${titulo} — Elena Instagram</b>\n<code>${String(detalle).substring(0, 400)}</code>`
-  fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ chat_id: chatId, text: texto, parse_mode: 'HTML' }),
-  }).catch(() => {})
-}
+const { alertar } = require('./alertas')
 
+// Sin esto, una promesa rechazada sin manejar tumba el proceso en silencio y el bot
+// queda mudo hasta que alguien lo note.
 process.on('uncaughtException',  err => alertar('ERROR CRÍTICO NO CAPTURADO', err?.stack ?? err))
 process.on('unhandledRejection', err => alertar('PROMESA RECHAZADA', err?.stack ?? err))
 
@@ -33,9 +20,6 @@ const imgHash = require('./image-hash')
 
 const app  = express()
 const PORT = process.env.PORT ?? 3001
-
-// Set de message IDs ya procesados — evita duplicados que Meta reenvía
-const midsProcesados = new Set()
 
 // ── Raw body para validar firma Meta ─────────────────────────────────────────
 app.use(express.json({
@@ -118,13 +102,70 @@ async function cargarCatalogos() {
   }
 }
 
-// ── Rate limiting por PSID ────────────────────────────────────────────────────
-const cooldowns = new Map()
-function enCooldown(psid) {
-  const last = cooldowns.get(psid) ?? 0
-  if (Date.now() - last < 1500) return true
-  cooldowns.set(psid, Date.now())
-  return false
+// ── Buffer de ráfagas + cola serializada por PSID ─────────────────────────────
+// En Instagram la gente escribe en varios mensajes seguidos ("Hola" / "quiero una
+// cama" / "de 2 metros"). El enCooldown anterior DESCARTABA en silencio el 2º y el 3º.
+// Ahora:
+//  - los mensajes de solo texto se agrupan (debounce) y se procesan como uno solo;
+//  - todo el procesamiento de un mismo PSID se serializa, para que no corran dos
+//    runAgentLoop en paralelo con escrituras de historial intercaladas.
+const DEBOUNCE_MS = 2500
+const buffers = new Map() // psid -> { textos: [], timer }
+const colas   = new Map() // psid -> Promise (cadena de ejecución serializada)
+
+// Encadena la tarea después de la última del mismo PSID (mutex por cliente).
+function encolar(psid, tarea) {
+  const anterior  = colas.get(psid) ?? Promise.resolve()
+  const siguiente = anterior.then(tarea, tarea) // corre aunque la anterior haya fallado
+  colas.set(psid, siguiente)
+  siguiente.finally(() => { if (colas.get(psid) === siguiente) colas.delete(psid) })
+  return siguiente
+}
+
+const correr = (psid, ...args) =>
+  handleMessage(psid, ...args).catch(e => alertar('handleMessage falló', `psid=${psid} ${e.message}`))
+
+// Punto de entrada desde el webhook. Decide entre agrupar texto o procesar ya.
+function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) {
+  const soloTexto = texto && !adjuntos?.length && !esStoryReply
+
+  if (soloTexto) {
+    let buf = buffers.get(psid)
+    if (!buf) { buf = { textos: [], timer: null }; buffers.set(psid, buf) }
+    buf.textos.push(texto)
+    if (buf.timer) clearTimeout(buf.timer)
+    buf.timer = setTimeout(() => {
+      buffers.delete(psid)
+      encolar(psid, () => correr(psid, buf.textos.join('\n'), null, false, null, null))
+    }, DEBOUNCE_MS)
+    return
+  }
+
+  // Mensaje con imagen / historia / adjunto: primero vaciar el texto pendiente (para
+  // no perder el orden), luego procesar este.
+  const buf = buffers.get(psid)
+  let textoPrevio = ''
+  if (buf) {
+    if (buf.timer) clearTimeout(buf.timer)
+    buffers.delete(psid)
+    textoPrevio = buf.textos.join('\n')
+  }
+  encolar(psid, async () => {
+    if (textoPrevio) await correr(psid, textoPrevio, null, false, null, null)
+    await correr(psid, texto, adjuntos, esStoryReply, storyUrl, storyId)
+  })
+}
+
+// Caché de getUserInfo por PSID: nombre y username no cambian entre mensajes, y antes
+// se pedía a Graph API en CADA mensaje (una llamada extra incluso con el bot callado).
+const userInfoCache = new Map()
+const USER_INFO_TTL = 6 * 60 * 60 * 1000 // 6 h
+async function getUserInfoCache(psid) {
+  const cached = userInfoCache.get(psid)
+  if (cached && Date.now() - cached.ts < USER_INFO_TTL) return cached.data
+  const data = await ig.getUserInfo(psid)
+  userInfoCache.set(psid, { data, ts: Date.now() })
+  return data
 }
 
 // Red de seguridad extra contra el bucle del aviso "tu mensaje fue recibido": aunque
@@ -567,6 +608,27 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'agendar_cita': {
+      // Validar antes de escribir nada: sin esto se podía agendar un domingo a las
+      // 3am. Se le devuelve el error al modelo para que se lo aclare al cliente.
+      if (Number(args.ubicacion) < 1 || Number(args.ubicacion) > 5) {
+        return 'Sede inválida (debe ser 1-5). Pregúntale al cliente cuál sede prefiere y vuelve a intentar.'
+      }
+      const diaNorm     = normalize(args.dia ?? '')
+      const diasValidos = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado']
+      if (!diasValidos.some(d => diaNorm.includes(d))) {
+        return 'Día inválido: solo atendemos de lunes a sábado (domingo cerrado). Pídele al cliente otra fecha.'
+      }
+      const horaMatch = String(args.hora ?? '').match(/^(\d{1,2})(?::(\d{2}))?$/)
+      if (!horaMatch) {
+        return 'Hora en formato inválido (ej. "14:00" o "9"). Vuelve a pedirle la hora al cliente.'
+      }
+      const h        = parseInt(horaMatch[1])
+      const esSabado = diaNorm.includes('sabado')
+      const horaMax  = esSabado ? 11 : 16 // Sáb hasta las 12, L-V hasta las 5pm (última cita a la hora en punto)
+      if (h < 8 || h > horaMax) {
+        return `Hora fuera de horario (${esSabado ? 'sábado 8am-12pm' : 'lunes-viernes 8am-5pm'}). Pídele al cliente otra hora dentro de ese rango.`
+      }
+
       const sedeNombre = SEDE_NOMBRE[args.ubicacion] ?? `Sede ${args.ubicacion}`
       const tiendaId   = SEDE_TIENDA_ID[args.ubicacion] ?? null
       const motivo     = args.motivo || null
@@ -581,14 +643,11 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         return 'No pude registrar la cita en este momento. Dile al cliente que un asesor lo contactará para confirmarla, y llama a solicitar_asesor.'
       }
 
-      notificarEnSegundoPlano(
-        () => enviarNotificacionSistema(
-          psid, userInfo,
-          `Cita: ${args.nombre} — ${sedeNombre} — ${args.dia} ${args.hora}${motivo ? ` — ${motivo}` : ''}`,
-          'cita',
-          { datos_cita: datosCita, tienda_id: tiendaId }
-        ),
-        `agendar_cita psid=${psid}`
+      notificarRedes(
+        psid, userInfo,
+        `Cita: ${args.nombre} — ${sedeNombre} — ${args.dia} ${args.hora}${motivo ? ` — ${motivo}` : ''}`,
+        'cita',
+        { datos_cita: datosCita, tienda_id: tiendaId }
       )
 
       const lineaMotivo = motivo ? `\nMotivo: ${motivo}` : ''
@@ -646,12 +705,12 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // después de haberle dicho que lo transfería.
       await db.marcarTransferido(psid, true)
 
-      notificarEnSegundoPlano(
-        () => enviarNotificacionSistema(psid, userInfo, motivoFinal, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined }),
-        `solicitar_asesor psid=${psid}`,
-        // Si el asesor nunca se entera, no dejemos al cliente hablando solo con nadie:
+      notificarRedes(
+        psid, userInfo, motivoFinal, args.tipo,
+        { carrito: carritoIG.length ? carritoIG : undefined },
+        // Si ni siquiera se pudo encolar, no dejemos al cliente hablando solo con nadie:
         // se reactiva la IA para que al menos siga atendiéndolo.
-        () => db.marcarTransferido(psid, false)
+        { alFallar: () => db.marcarTransferido(psid, false) }
       )
 
       const aviso = avisoFueraHorario()
@@ -719,14 +778,11 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         return 'No pude registrar el pedido en este momento. Dile al cliente que un asesor lo contactará para completarlo, y llama a solicitar_asesor.'
       }
 
-      notificarEnSegundoPlano(
-        () => enviarNotificacionSistema(
-          psid, userInfo,
-          `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`,
-          'pedido',
-          { carrito }
-        ),
-        `confirmar_pedido psid=${psid}`
+      notificarRedes(
+        psid, userInfo,
+        `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}`,
+        'pedido',
+        { carrito }
       )
       await setCarrito(psid, [])
       await ig.sendTextMessage(psid,
@@ -812,16 +868,55 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
   }
 }
 
-// Notifica sin bloquear la respuesta al cliente. La notificación a Redes puede tardar
+// Notifica a Redes sin bloquear la respuesta al cliente. La notificación puede tardar
 // hasta ~56 s (timeout de 25 s + reintento), y no tiene sentido que el cliente espere
-// eso para leer "voy a conectarte con un asesor". Si falla del todo, se alerta.
-function notificarEnSegundoPlano(promesaFn, contexto, alFallar) {
-  Promise.resolve()
-    .then(promesaFn)
-    .catch(e => {
-      alertar(`Notificación a Redes falló (${contexto})`, e.message)
-      if (alFallar) Promise.resolve().then(alFallar).catch(() => {})
+// eso para leer "voy a conectarte con un asesor". Si el envío directo falla, se ENCOLA
+// en BD para que el worker lo reintente con backoff, en vez de perderse.
+function notificarRedes(psid, userInfo, resumen, tipo, extra = {}, { alFallar } = {}) {
+  enviarNotificacionSistema(psid, userInfo, resumen, tipo, extra)
+    .catch(async e => {
+      console.warn(`[redes] envío directo falló (${tipo} psid=${psid}), encolando para reintento:`, e.message)
+      try {
+        await db.encolarNotificacion(psid, tipo, {
+          resumen, extra,
+          userInfo: { nombre: userInfo?.nombre ?? null, username: userInfo?.username ?? null },
+        })
+      } catch (enqErr) {
+        alertar(`No se pudo encolar notificación ${tipo}`, `psid=${psid} ${enqErr.message}`)
+        if (alFallar) Promise.resolve().then(alFallar).catch(() => {})
+      }
     })
+}
+
+// Worker: reintenta las notificaciones encoladas. Corre en intervalo desde startServer.
+let procesandoCola = false
+async function procesarColaNotificaciones() {
+  if (procesandoCola) return // evita solapamiento si un ciclo tarda más que el intervalo
+  procesandoCola = true
+  try {
+    const pendientes = await db.getNotificacionesPendientes(10)
+    for (const n of pendientes) {
+      const { resumen, extra, userInfo } = n.payload
+      try {
+        await enviarNotificacionSistema(n.psid, userInfo ?? {}, resumen, n.tipo, extra ?? {})
+        await db.eliminarNotificacion(n.id)
+        console.log(`[redes] notificación encolada #${n.id} (${n.tipo}) enviada tras reintento`)
+      } catch (e) {
+        const intentos = (n.intentos ?? 0) + 1
+        if (intentos >= 8) {
+          // ~cola llega hasta 120 min entre intentos; 8 intentos es más de un día.
+          await db.eliminarNotificacion(n.id)
+          alertar(`Notificación ${n.tipo} descartada tras ${intentos} intentos`, `psid=${n.psid}: ${e.message}`)
+        } else {
+          await db.reprogramarNotificacion(n.id, intentos, e.message)
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[redes] error procesando cola:', e.message)
+  } finally {
+    procesandoCola = false
+  }
 }
 
 // Horario real de atención: Lun-Vie 8am-5pm, Sáb 8am-12pm, domingo cerrado.
@@ -857,9 +952,7 @@ function esVisualizacion(texto) {
 // ── Manejador principal de mensajes ───────────────────────────────────────────
 
 async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) {
-  if (enCooldown(psid)) return
-
-  const userInfo = await ig.getUserInfo(psid)
+  const userInfo = await getUserInfoCache(psid)
   await db.getOrCreateClienteByPsid(psid, userInfo.username, userInfo.nombre)
 
   // Mientras el cliente siga transferido a un asesor, la IA NO interviene bajo
@@ -1104,6 +1197,10 @@ app.post('/webhook/instagram', (req, res) => {
   console.log(`[webhook] object=${body.object} entries=${body.entry?.length ?? 0}`)
   if (body.object !== 'instagram' && body.object !== 'page') return
 
+  procesarEventos(body).catch(e => alertar('procesarEventos falló', e.message))
+})
+
+async function procesarEventos(body) {
   for (const entry of body.entry ?? []) {
     for (const event of entry.messaging ?? []) {
       // Ignorar ecos (mensajes propios del bot). `is_echo` no siempre llega marcado
@@ -1125,19 +1222,19 @@ app.post('/webhook/instagram', (req, res) => {
 
       if (!psid) continue
 
-      // Deduplicar: Meta a veces reenvía el mismo evento varias veces
+      // Deduplicar: Meta reenvía el mismo evento varias veces. Ahora es durable en BD
+      // (antes un Set en memoria: tras un redeploy de Render se re-procesaban mensajes
+      // ya contestados, y con más de una instancia no servía).
       const mid = event.message?.mid
-      if (mid) {
-        if (midsProcesados.has(mid)) { console.log(`[webhook] mid duplicado ignorado: ${mid}`); continue }
-        midsProcesados.add(mid)
-        setTimeout(() => midsProcesados.delete(mid), 5 * 60 * 1000)
+      if (mid && !(await db.registrarMid(mid))) {
+        console.log(`[webhook] mid duplicado ignorado: ${mid}`)
+        continue
       }
 
-      handleMessage(psid, texto, adjuntos, storyReply, storyUrl, storyId)
-        .catch(e => console.error('[handleMessage] Error no capturado:', e.message))
+      recibirMensaje(psid, texto, adjuntos, storyReply, storyUrl, storyId)
     }
   }
-})
+}
 
 // ── Validación de firma ───────────────────────────────────────────────────────
 function verificarFirma(req) {
@@ -1228,7 +1325,11 @@ async function startServer() {
   db.limpiarHistorialAntiguo(90).catch(e => console.error('[db] limpieza error:', e.message))
   setInterval(() => {
     db.limpiarHistorialAntiguo(90).catch(e => console.error('[db] limpieza error:', e.message))
+    db.limpiarMidsAntiguos(2).catch(e => console.error('[db] limpieza mids error:', e.message))
   }, 24 * 60 * 60 * 1000)
+
+  // Worker de la cola durable de notificaciones a Redes (reintentos con backoff).
+  setInterval(() => { procesarColaNotificaciones() }, 60 * 1000)
 
   app.listen(PORT, () => {
     console.log(`[server] Instagram Agent corriendo en puerto ${PORT}`)
