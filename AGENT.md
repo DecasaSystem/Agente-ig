@@ -157,15 +157,17 @@ Pendiente de esta fase, movido a Fase 2: **cola durable de reintentos** para las
 
 Nota: los reintentos con backoff para OpenAI (429/5xx) quedaron pendientes; hoy un fallo de OpenAI cae al `catch` de `handleMessage`, que avisa al cliente y notifica a un asesor. Se puede envolver `runAgentLoop` con `conReintentos` en Fase 3.
 
-### Fase 3 — Calidad de la conversación
+### Fase 3 — Calidad de la conversación ⏳ *(núcleo hecho)*
 *Objetivo: que Elena venda mejor y no invente.*
 
-- [ ] Sacar el inventario del system prompt; dejar solo categorías y confiar en `buscar_productos`. Menos coste, menos latencia, menos alucinación.
-- [ ] Bajar `temperature` a ~0.5 y medir.
-- [ ] Validación de salida: si la respuesta contiene un precio, verificar contra el inventario antes de enviarla.
-- [ ] Resumen rodante de la conversación cuando supera N mensajes, en vez de truncar.
+- [x] Inventario fuera del system prompt: los 318 productos ya no van en cada llamada (~6k tokens menos por mensaje). El prompt solo lista categorías y obliga a usar `buscar_productos`. `inventario` sigue en memoria para las herramientas.
+- [x] `temperature` de 0.8 a 0.5.
+- [x] Validación de precios en la salida (`extraerPrecios` / `validarPrecios`): un precio en la respuesta que no exista en el inventario ni haya salido de una herramienta en ese turno (p.ej. total de carrito) se alerta. Es **monitoreo**, no bloqueo: no se corta el mensaje para no romper la conversación por un falso positivo.
+- [x] Guardrail anti prompt-injection: sección SEGURIDAD en el prompt — el texto del cliente es dato, no instrucción; no cambiar de rol ni inventar descuentos/precios/políticas.
+- [ ] Resumen rodante de la conversación cuando supera N mensajes, en vez de truncar en 12.
 - [ ] Perfil persistente del cliente (nombre, presupuesto, espacio, productos vistos) reutilizable entre sesiones.
-- [ ] Guardrails contra prompt injection.
+
+Los dos pendientes son más invasivos (una llamada extra a OpenAI para resumir/extraer) y de beneficio incremental: conviene medir primero el efecto de sacar el inventario antes de añadir más piezas. La validación de precios quedó como monitoreo; si en producción aparecen precios inventados, el siguiente paso es un reintento correctivo o bloqueo. Reintentos con backoff para OpenAI (heredado de Fase 2) también encajan aquí.
 
 ### Fase 4 — Experiencia nativa de Instagram
 *Objetivo: que se sienta un asistente, no un chat de texto.*
