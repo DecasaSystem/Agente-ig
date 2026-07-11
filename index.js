@@ -184,6 +184,28 @@ function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) 
   })
 }
 
+// Menú de respuestas rápidas que acompaña al saludo inicial.
+const QUICK_MENU = [
+  { title: 'Ver catálogo 📖',    payload: 'MENU::CATALOGO' },
+  { title: 'Agendar visita 📅',  payload: 'MENU::AGENDAR' },
+  { title: 'Hablar con asesor 💬', payload: 'MENU::ASESOR' },
+]
+
+// Traduce el payload de un quick reply / botón de carrusel a un mensaje de cliente,
+// para que el flujo siga igual que si lo hubiera escrito a mano.
+function payloadAIntent(payload) {
+  if (!payload) return null
+  if (payload.startsWith('INTERESA::')) {
+    return `Me interesa el ${payload.slice('INTERESA::'.length)}, cuéntame más 😊`
+  }
+  switch (payload) {
+    case 'MENU::CATALOGO': return 'Quiero ver el catálogo'
+    case 'MENU::AGENDAR':  return 'Quiero agendar una visita'
+    case 'MENU::ASESOR':   return 'Quiero hablar con un asesor'
+    default:               return null
+  }
+}
+
 // Caché de getUserInfo por PSID: nombre y username no cambian entre mensajes, y antes
 // se pedía a Graph API en CADA mensaje (una llamada extra incluso con el bot callado).
 const userInfoCache = new Map()
@@ -247,7 +269,8 @@ INSTRUCCIONES OBLIGATORIAS:
 2. NUNCA inventes precios ni productos — solo lo que devuelva buscar_productos
 3. Cuando el cliente mencione presupuesto o "barato/económico" → usa buscar_por_presupuesto
 3b. Cuando el cliente pregunte si hay stock/disponibilidad/en qué tienda/si lo pueden conseguir → responde SIEMPRE: "¡Seguramente sí! 😊 En DeCasa manejamos buen stock y lo que no tengamos en tienda lo fabricamos al mismo precio desde nuestro taller. ¿Quieres que te comunique con un asesor para confirmar disponibilidad y coordinar?" — luego espera su respuesta. Si el cliente dice que sí quiere confirmar → llama solicitar_asesor. NUNCA menciones una tienda específica ni inventes dónde está disponible.
-4. Para fotos → usa enviar_foto (escribe "Te envío la foto 👇" antes de llamarla)
+4. Para mostrar UN solo producto con foto → usa enviar_foto (escribe "Te envío la foto 👇" antes)
+4a. Para mostrar VARIAS opciones (2 o más) → usa enviar_carrusel con los nombres exactos (escribe "Mira estas opciones 👇" antes). Prefiérelo SIEMPRE sobre listar productos en texto: es más claro y vistoso. No mandes fotos sueltas una por una cuando son varias.
 4b. Para catálogos → usa enviar_catalogo cuando el cliente pida ver el catálogo de una categoría o quiera explorar todas las opciones
 5. Para agendar → recopila EN ORDEN: nombre completo, sede preferida, fecha COMPLETA (día de la semana + número + mes + año, ej: "miércoles 18 de junio de 2026"), hora (Lun-Vie 8am-5pm / Sáb 8am-12pm); el motivo es OPCIONAL — pregúntalo solo si el cliente no lo mencionó, pero si no quiere darlo llama agendar_cita sin motivo (NUNCA inventes ni inferras el motivo del contexto). Si el cliente da una fecha ambigua o incompleta (solo el día de la semana, solo el día sin año, o solo el mes sin número de día), usa FECHA ACTUAL para calcular la fecha correcta y CONFIRMA antes de agendar: "¿Confirmamos para el [día de semana] [número] de [mes] de [año]?". NUNCA llames agendar_cita con una fecha que no hayáis confirmado explícitamente. Al pedir la sede SIEMPRE lista las opciones así:
 "¿Cuál sede prefieres?
@@ -377,11 +400,26 @@ const TOOLS = [
   },
   {
     name: 'enviar_foto',
-    description: 'Envía la foto de un producto al cliente.',
+    description: 'Envía la foto de UN producto al cliente. Úsalo cuando muestras un solo producto.',
     parameters: {
       type: 'object',
       properties: { nombre_producto: { type: 'string' } },
       required: ['nombre_producto'],
+    },
+  },
+  {
+    name: 'enviar_carrusel',
+    description: 'Envía VARIOS productos (2 a 10) como tarjetas deslizables con foto, precio y botón. Úsalo SIEMPRE que vayas a mostrar varias opciones al cliente, en lugar de listarlas en texto y mandar fotos sueltas. Escribe una frase corta ("Mira estas opciones 👇") antes de llamarlo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        productos: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Nombres exactos de los productos a mostrar (2-10), tal como los devolvió buscar_productos.',
+        },
+      },
+      required: ['productos'],
     },
   },
   {
@@ -638,9 +676,39 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       await db.setUltimoProducto(psid, { nombre: resultado.nombre, imagen: resultado.imagen ?? null, ts: Date.now() })
       if (resultado.imagen) {
         await ig.sendImageMessage(psid, resultado.imagen)
+        // Segunda foto del producto si existe (otro ángulo/detalle): antes se ignoraba.
+        if (resultado.imagen2 && resultado.imagen2 !== resultado.imagen) {
+          await ig.sendImageMessage(psid, resultado.imagen2)
+        }
         return `[Foto de ${resultado.nombre} enviada — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')}. Haz seguimiento de venta]`
       }
       return `[${resultado.nombre} — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')} — sin foto disponible. Sugiere al cliente visitar el perfil @muebles_decasa]`
+    }
+
+    case 'enviar_carrusel': {
+      // Muestra 2-10 productos como tarjetas con foto, precio y botón. Es el reemplazo
+      // "nativo" de listar productos en texto + varias fotos sueltas.
+      const nombres = Array.isArray(args.productos) ? args.productos.slice(0, 10) : []
+      const encontrados = nombres
+        .map(n => buscarEnInventario(n)[0])
+        .filter(p => p && p.imagen)
+      if (encontrados.length < 2) {
+        // Con menos de 2 tarjetas no vale la pena un carrusel: que el modelo use enviar_foto.
+        return 'No hay suficientes productos con foto para un carrusel. Usa enviar_foto para mostrar uno solo.'
+      }
+      const elementos = encontrados.map(p => ({
+        title:     p.nombre,
+        subtitle:  `$${Number(p.precio ?? 0).toLocaleString('es-CO')}${p.medidas ? ` · ${p.medidas}` : ''}`,
+        image_url: p.imagen,
+        buttons:   [{ type: 'postback', title: 'Me interesa 💬', payload: `INTERESA::${p.nombre}` }],
+      }))
+      const ok = await ig.sendCarousel(psid, elementos)
+      await db.setUltimoProducto(psid, { nombre: encontrados[0].nombre, imagen: encontrados[0].imagen ?? null, ts: Date.now() })
+      if (!ok) {
+        // Degradación elegante: si el carrusel falla, el modelo lo presenta en texto.
+        return `No pude enviar el carrusel visual. Preséntale estos productos en texto:\n${encontrados.map(formatProducto).join('\n\n')}`
+      }
+      return `[Carrusel enviado con ${encontrados.length} productos: ${encontrados.map(p => p.nombre).join(', ')}. Añade una frase corta de cierre invitando a elegir o pedir más info.]`
     }
 
     case 'agendar_cita': {
@@ -1179,8 +1247,9 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     const esSoloSaludo = /^[¡!¿?\s]*(hola|holis|holi|holaa|buenas?|buenos\s*(dias?|tardes?|noches?)|que\s*tal|hi|hello|hey|saludos)[¡!¿?\s.]*$/i.test(mensajeAI.trim())
 
     if (esPrimerMensaje && esSoloSaludo) {
-      // Solo saludo inicial: responder con el hardcodeado y no llamar a OpenAI
-      await ig.sendTextMessage(psid, SALUDO_IG)
+      // Solo saludo inicial: responder con el hardcodeado (con botones rápidos) y no
+      // llamar a OpenAI. sendQuickReplies cae solo a texto si el envío falla.
+      await ig.sendQuickReplies(psid, SALUDO_IG, QUICK_MENU)
       await db.guardarMensaje(psid, 'user', mensajeAI)
       await db.guardarMensaje(psid, 'assistant', SALUDO_IG)
       return
@@ -1238,6 +1307,13 @@ app.post('/webhook/instagram', (req, res) => {
 
 async function procesarEventos(body) {
   for (const entry of body.entry ?? []) {
+    // Comentarios en publicaciones (requiere suscripción al campo 'comments' del webhook).
+    for (const change of entry.changes ?? []) {
+      if (change.field === 'comments') {
+        await manejarComentario(change.value).catch(e => console.error('[comentario] error:', e.message))
+      }
+    }
+
     for (const event of entry.messaging ?? []) {
       // Ignorar ecos (mensajes propios del bot). `is_echo` no siempre llega marcado
       // por Instagram para mensajes enviados por un humano desde la app nativa (no vía
@@ -1250,7 +1326,14 @@ async function procesarEventos(body) {
       if (event.sender?.id && event.sender.id === process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID) continue
 
       const psid       = event.sender?.id
-      const texto      = event.message?.text ?? null
+      // quick_reply (botón bajo un texto) y postback (botón de carrusel) llegan como
+      // payload; se traduce a un mensaje de cliente para que el flujo siga igual. Al
+      // tocar un quick reply, Meta manda también el título como texto: se prioriza el
+      // payload mapeado (más fiable) y se cae al texto solo si el payload es desconocido.
+      const payload    = event.message?.quick_reply?.payload ?? event.postback?.payload ?? null
+      const texto      = payload
+        ? (payloadAIntent(payload) ?? event.message?.text ?? null)
+        : (event.message?.text ?? null)
       const adjuntos   = event.message?.attachments ?? null
       const storyReply = !!event.message?.reply_to?.story
       const storyUrl   = event.message?.reply_to?.story?.url ?? null
@@ -1261,7 +1344,7 @@ async function procesarEventos(body) {
       // Deduplicar: Meta reenvía el mismo evento varias veces. Ahora es durable en BD
       // (antes un Set en memoria: tras un redeploy de Render se re-procesaban mensajes
       // ya contestados, y con más de una instancia no servía).
-      const mid = event.message?.mid
+      const mid = event.message?.mid ?? event.postback?.mid
       if (mid && !(await db.registrarMid(mid))) {
         console.log(`[webhook] mid duplicado ignorado: ${mid}`)
         continue
@@ -1270,6 +1353,35 @@ async function procesarEventos(body) {
       recibirMensaje(psid, texto, adjuntos, storyReply, storyUrl, storyId)
     }
   }
+}
+
+// ── Comentarios en publicaciones → invitar al DM ──────────────────────────────
+// Regla de negocio: en el comentario público NUNCA se dan precios ni detalles. Solo
+// se responde (con una respuesta privada que abre el DM) cuando el comentario pregunta
+// por precio, medidas, disponibilidad o cómo comprar. Los comentarios que no preguntan
+// nada (elogios, emojis, etiquetas a amigos) no se responden.
+function comentarioEsConsulta(texto) {
+  if (!texto) return false
+  const t = normalize(texto)
+  return /(precio|vale|cuanto|cuesta|valor|costo|medida|tama|dimension|disponible|disponibilidad|hay|tienen|queda|consigo|comprar|domicilio|envio|cuota|credito|addi|informacion|info|interesa|me\s+gusta\s+cuanto)/.test(t)
+}
+
+async function manejarComentario(value) {
+  const commentId = value?.id
+  const texto     = value?.text ?? ''
+  const fromId    = value?.from?.id
+
+  if (!commentId) return
+  // No responder los comentarios propios de la cuenta.
+  if (fromId && fromId === process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID) return
+  // Solo consultas de precio/disponibilidad; lo demás se ignora.
+  if (!comentarioEsConsulta(texto)) return
+  // Una sola respuesta por comentario (Meta lo exige y evita spam).
+  if (!(await db.registrarComentario(commentId))) return
+
+  const respuesta = '¡Hola! 😊 Con gusto te damos toda la info por aquí en privado. ¿Qué mueble te interesa? 🛋️'
+  const ok = await ig.sendPrivateReplyToComment(commentId, respuesta)
+  if (ok) console.log(`[comentario] respuesta privada enviada para comment ${commentId}`)
 }
 
 // ── Validación de firma ───────────────────────────────────────────────────────

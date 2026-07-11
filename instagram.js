@@ -9,14 +9,16 @@ const TOKEN = () => process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
 // Enviar texto al usuario (dividir si supera 1000 chars)
 async function sendTextMessage(psid, texto) {
   const chunks = splitMessage(texto, 980)
+  let ok = true
   for (const chunk of chunks) {
-    await _send(psid, { text: chunk })
+    if (!(await _send(psid, { text: chunk }))) ok = false
   }
+  return ok
 }
 
 // Enviar imagen via URL pública (Cloudinary)
 async function sendImageMessage(psid, imageUrl) {
-  await _send(psid, {
+  return _send(psid, {
     attachment: {
       type: 'image',
       payload: { url: imageUrl, is_reusable: true },
@@ -84,6 +86,7 @@ async function _send(psid, message) {
         return code === 613 || (status >= 500 && status < 600) || !e.response
       },
     })
+    return true
   } catch (e) {
     const err = e.response?.data?.error
     console.error('[IG] sendMessage error:', err ?? e.message)
@@ -93,8 +96,60 @@ async function _send(psid, message) {
     if (err?.code === 190) {
       alertar('Token de Instagram inválido/expirado (code 190)', err.message ?? 'sin detalle')
     }
-    // No relanzar: un fallo de envío no debe tumbar el manejo del mensaje. El caller
-    // decide si el texto era crítico.
+    // No relanzar: un fallo de envío no debe tumbar el manejo del mensaje. Se devuelve
+    // false para que el caller pueda caer a texto plano.
+    return false
+  }
+}
+
+// Texto con botones de respuesta rápida. opciones = [{ title, payload }] (máx 13,
+// title máx 20 chars). Devuelve true/false para permitir degradación a texto plano.
+async function sendQuickReplies(psid, texto, opciones) {
+  const quick_replies = (opciones ?? []).slice(0, 13).map(o => ({
+    content_type: 'text',
+    title:        String(o.title).substring(0, 20),
+    payload:      String(o.payload).substring(0, 1000),
+  }))
+  if (!quick_replies.length) return sendTextMessage(psid, texto)
+  return _send(psid, { text: String(texto).substring(0, 980), quick_replies })
+}
+
+// Carrusel de tarjetas (generic template). elementos = [{ title, subtitle, image_url,
+// buttons: [{type:'postback',title,payload} | {type:'web_url',title,url}] }] (máx 10).
+async function sendCarousel(psid, elementos) {
+  const elements = (elementos ?? []).slice(0, 10).map(el => {
+    const card = { title: String(el.title).substring(0, 80) }
+    if (el.subtitle)  card.subtitle  = String(el.subtitle).substring(0, 80)
+    if (el.image_url) card.image_url = el.image_url
+    if (el.buttons?.length) {
+      card.buttons = el.buttons.slice(0, 3).map(b =>
+        b.type === 'web_url'
+          ? { type: 'web_url',  url: b.url, title: String(b.title).substring(0, 20) }
+          : { type: 'postback', title: String(b.title).substring(0, 20), payload: String(b.payload).substring(0, 1000) }
+      )
+    }
+    return card
+  })
+  if (!elements.length) return false
+  return _send(psid, {
+    attachment: { type: 'template', payload: { template_type: 'generic', elements } },
+  })
+}
+
+// Respuesta PRIVADA a un comentario: abre un DM en respuesta al comentario. Requiere
+// el permiso instagram_manage_comments y la suscripción al campo 'comments' del webhook.
+// Nota de Meta: solo una respuesta privada por comentario, y dentro de los 7 días.
+async function sendPrivateReplyToComment(commentId, texto) {
+  const enviar = () => axios.post(`${BASE}/me/messages`,
+    { recipient: { comment_id: commentId }, message: { text: String(texto).substring(0, 980) } },
+    { params: { access_token: TOKEN() }, timeout: 10000 }
+  )
+  try {
+    await enviar()
+    return true
+  } catch (e) {
+    console.error('[IG] private reply error:', e.response?.data?.error ?? e.message)
+    return false
   }
 }
 
@@ -130,4 +185,8 @@ async function getMediaDetails(mediaId) {
   }
 }
 
-module.exports = { sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo, downloadMediaToBuffer, getMediaDetails }
+module.exports = {
+  sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo,
+  downloadMediaToBuffer, getMediaDetails,
+  sendQuickReplies, sendCarousel, sendPrivateReplyToComment,
+}

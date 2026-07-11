@@ -169,13 +169,21 @@ Nota: los reintentos con backoff para OpenAI (429/5xx) quedaron pendientes; hoy 
 
 Los dos pendientes son más invasivos (una llamada extra a OpenAI para resumir/extraer) y de beneficio incremental: conviene medir primero el efecto de sacar el inventario antes de añadir más piezas. La validación de precios quedó como monitoreo; si en producción aparecen precios inventados, el siguiente paso es un reintento correctivo o bloqueo. Reintentos con backoff para OpenAI (heredado de Fase 2) también encajan aquí.
 
-### Fase 4 — Experiencia nativa de Instagram
+### Fase 4 — Experiencia nativa de Instagram ✅ *(hecha)*
 *Objetivo: que se sienta un asistente, no un chat de texto.*
 
-- [ ] Quick replies: "Ver catálogo", "Agendar visita", "Hablar con asesor".
-- [ ] Carrusel de productos con foto, precio y botón, en vez de listas en texto.
-- [ ] Responder comentarios de posts y llevarlos al DM (`entry.changes`). **Regla de negocio**: en el comentario público nunca se dan precios ni detalles — solo se invita al DM, y solo cuando el comentario pregunta por precio, medidas, disponibilidad o similar. Los comentarios que no preguntan nada (elogios, emojis, etiquetas a amigos) no se responden.
-- [ ] Enviar la segunda foto del producto (`foto_url_2`), hoy ignorada.
+- [x] Quick replies tras el saludo: "Ver catálogo", "Agendar visita", "Hablar con asesor" (`sendQuickReplies` + `QUICK_MENU`). Al tocarlos, `payloadAIntent` traduce el payload a la intención y sigue el flujo normal.
+- [x] Carrusel de productos con foto, precio y botón "Me interesa 💬" (tool `enviar_carrusel` + `sendCarousel`, generic template). El prompt lo prefiere sobre listar en texto. Botón → postback `INTERESA::<producto>` → el agente retoma ese producto.
+- [x] Responder comentarios de posts (`entry.changes`, campo `comments`) con respuesta **privada** que abre el DM. Regla aplicada en `comentarioEsConsulta`: solo cuando el comentario pregunta por precio/medidas/disponibilidad/compra; nunca se dan precios en público; los que no preguntan (elogios, emojis, etiquetas) se ignoran. Dedupe por `comment_id` (una sola respuesta, como exige Meta).
+- [x] Segunda foto del producto (`foto_url_2` → `imagen2`): `enviar_foto` la manda si existe y difiere de la primera.
+
+**Todo con degradación elegante**: si un envío enriquecido falla (carrusel/quick reply), se cae a texto plano — el cliente siempre recibe algo. Los payloads se verificaron contra el formato documentado por Meta interceptando axios (no se pudo probar contra Meta en vivo desde el entorno de desarrollo).
+
+> **Configuración requerida en el panel de Meta para los comentarios→DM** (no se puede hacer desde el código):
+> 1. Suscribir el webhook al campo **`comments`** (además de `messages`).
+> 2. Permiso **`instagram_manage_comments`** en la app.
+> 3. Límites de Meta: una sola respuesta privada por comentario y dentro de los 7 días. El código ya respeta el "una sola" con `ig_comentarios_respondidos`.
+> Mientras no se active la suscripción a `comments`, esta parte simplemente no recibe eventos (el resto funciona igual).
 
 ### Fase 5 — Operación y negocio
 *Objetivo: poder mejorarlo con datos, no con intuición.*

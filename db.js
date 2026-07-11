@@ -133,6 +133,17 @@ async function runMigrations() {
       )
     `)
 
+    // Comentarios ya respondidos (respuesta privada al DM). Meta permite una sola
+    // respuesta privada por comentario; esto garantiza no intentarlo dos veces aunque
+    // el webhook reentregue el evento.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ig_comentarios_respondidos (
+        comment_id VARCHAR(180) PRIMARY KEY,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_created (created_at)
+      )
+    `)
+
     // Cola durable de notificaciones al sistema de ventas. Si el POST a Redes falla,
     // el pedido/cita ya está en BD, pero la tarjeta del asesor no existía y nadie la
     // reintentaba: había que crearla a mano.
@@ -360,7 +371,7 @@ async function getInventario() {
   let rows
   try {
     [rows] = await pool.query(
-      `SELECT nombre, precio_base AS precio, foto_url AS imagen, medidas, material, categoria AS subcategoria
+      `SELECT nombre, precio_base AS precio, foto_url AS imagen, foto_url_2 AS imagen2, medidas, material, categoria AS subcategoria
        FROM productos WHERE activo = 1 ORDER BY categoria, nombre`
     )
   } catch {
@@ -423,6 +434,18 @@ async function limpiarMidsAntiguos(dias = 2) {
     'DELETE FROM ig_mids_procesados WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)', [dias]
   )
   if (res.affectedRows) console.log(`[db] limpieza mids: ${res.affectedRows} eliminados`)
+}
+
+// true si el comentario es nuevo (hay que responderlo), false si ya se respondió.
+async function registrarComentario(commentId) {
+  try {
+    await pool.query('INSERT INTO ig_comentarios_respondidos (comment_id) VALUES (?)', [commentId])
+    return true
+  } catch (e) {
+    if (e.code === 'ER_DUP_ENTRY') return false
+    console.error('[db] registrarComentario falló:', e.message)
+    return false // ante la duda, NO responder de nuevo (evita spam público)
+  }
 }
 
 // ── Cola de notificaciones pendientes ────────────────────────────────────────
@@ -500,6 +523,7 @@ module.exports = {
   guardarCita,
   registrarMid,
   limpiarMidsAntiguos,
+  registrarComentario,
   encolarNotificacion,
   getNotificacionesPendientes,
   eliminarNotificacion,
