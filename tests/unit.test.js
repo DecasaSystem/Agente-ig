@@ -48,3 +48,23 @@ test('normalize: minúsculas y sin acentos', () => {
   assert.equal(agente.normalize('MIÉRCOLES Ñoño'), 'miercoles nono')
   assert.equal(agente.normalize('  Sofá  '), 'sofa')
 })
+
+test('buscarEnInventario: filtra bases por nº de puestos y por forma', () => {
+  const inv = [
+    { nombre: 'BASE 2K',          precio: 1480000, medidas: '1.20 x 0.90 (4 Puestos)',            material: 'madera',  subcategoria: 'bases_comedores' },
+    { nombre: 'BASE ABANICA',     precio: 2180000, medidas: 'Cubierta 120 Diametro (4 Puestos)',  material: 'chapilla',subcategoria: 'bases_comedores' },
+    { nombre: 'BASE FIGY RECTA',  precio: 2680000, medidas: '1.60 x 1.00 (6 Puestos)',            material: 'chapilla',subcategoria: 'bases_comedores' },
+    { nombre: 'BASE FIGY CURVA',  precio: 7880000, medidas: '2.20 x 0.90 (8 Puestos)',            material: 'chapilla',subcategoria: 'bases_comedores' },
+    { nombre: 'SILLA COMEDOR ALEXA', precio: 780000, medidas: 'Standard',                          material: 'madera',  subcategoria: 'sillas_comedor' },
+  ]
+  agente.setInventarioParaPruebas(inv)
+
+  // "comedor 4 puestos" debe traer las bases de 4 puestos ANTES que las sillas.
+  const cuatro = agente.buscarEnInventario('comedor 4 puestos', null, 5).map(p => p.nombre)
+  assert.ok(cuatro[0] === 'BASE 2K' || cuatro[0] === 'BASE ABANICA', `esperaba una base de 4 puestos primero, dio ${cuatro[0]}`)
+  assert.ok(!cuatro.slice(0, 2).includes('BASE FIGY RECTA'), 'una base de 6 puestos no debería salir primero')
+
+  // "en forma de copa" (pedestal) → base redonda con "Diametro".
+  const copa = agente.buscarEnInventario('mesa comedor en forma de copa', 'bases_comedores', 5).map(p => p.nombre)
+  assert.equal(copa[0], 'BASE ABANICA', `esperaba la base redonda (Diametro) primero, dio ${copa[0]}`)
+})
