@@ -57,9 +57,13 @@ async function runMigrations() {
         comparacion_pendiente          JSON,
         comparacion_productos          JSON,
         presupuesto                    VARCHAR(100),
+        ultimos_mostrados              JSON,
         FOREIGN KEY (usuario_id) REFERENCES clientes_wa(id) ON DELETE CASCADE
       )
     `)
+    // La tabla es compartida con el agente de WhatsApp; si ya existía sin esta columna,
+    // añadirla (para recordar los últimos productos mostrados y resolver "esa/la 2ª").
+    try { await pool.query('ALTER TABLE estado_usuario ADD COLUMN ultimos_mostrados JSON') } catch { /* ya existe */ }
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ig_conversaciones (
@@ -251,6 +255,24 @@ async function getUltimoProducto(psid) {
 
 async function setUltimoProducto(psid, data) {
   await setEstado(psid, { ultimo_producto: JSON.stringify(data) })
+}
+
+// Lista de los últimos productos que el bot le mostró al cliente (carrusel, foto o
+// resultados de búsqueda), para poder resolver referencias como "esa", "la segunda",
+// "la de $X" en el mensaje siguiente.
+async function setUltimosMostrados(psid, productos) {
+  await setEstado(psid, { ultimos_mostrados: JSON.stringify({ ts: Date.now(), productos }) })
+}
+
+async function getUltimosMostrados(psid, maxMinutos = 15) {
+  const estado = await getEstado(psid)
+  if (!estado?.ultimos_mostrados) return null
+  try {
+    const raw = estado.ultimos_mostrados
+    const v = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (!v?.ts || Date.now() - v.ts > maxMinutos * 60 * 1000) return null
+    return Array.isArray(v.productos) ? v.productos : null
+  } catch { return null }
 }
 
 async function limpiarEstado(psid) {
@@ -580,6 +602,8 @@ module.exports = {
   setEstado,
   getUltimoProducto,
   setUltimoProducto,
+  setUltimosMostrados,
+  getUltimosMostrados,
   limpiarEstado,
   debeEsperarAsesor,
   marcarTransferido,

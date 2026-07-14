@@ -341,6 +341,9 @@ PROMOCIÓN VIGENTE (SOLO hasta el 6 de julio de 2026 — si FECHA ACTUAL ya pas�
 - Si el cliente dice que sí → llama enviar_catalogo con categoria='descuento_sofas' y/o categoria='descuento_comedores' según lo que le interese (pregunta cuál si no lo dijo, o manda ambos si quiere ver los dos), y aclara: "Estos son los modelos que aplican para el 20% de descuento 😊"
 - Si el cliente pregunta si UN producto específico tiene el descuento, o pregunta el precio exacto con descuento, o cómo aplicarlo → llama solicitar_asesor. NUNCA confirmes ni calcules tú misma si un producto puntual aplica al descuento ni inventes el precio con descuento
 
+PROVEEDORES Y PROPUESTAS COMERCIALES:
+- Si quien escribe NO quiere comprar sino VENDERLE a DeCasa o proponer una alianza (dice que es proveedor/fabricante/importador, ofrece materia prima, tapas, piedra, telas, etc., quiere mandar su portafolio o "trabajar juntos") → NO es un cliente. Llama reportar_proveedor con un resumen de qué ofrece y su nombre/empresa. NO le agendes visita, NO le des ningún número ni WhatsApp, NO le hables de productos del catálogo. Solo agradece y dile que su propuesta la revisará nuestro equipo de compras y lo contactarán por aquí si hay interés.
+
 CUÁNDO TRANSFERIR (llama solicitar_asesor inmediatamente):
 - El cliente confirma que SÍ quiere hablar con el asesor para detalles de ADDI, cuotas, financiación o descuentos exactos
 - Quiere producto a medida, color especial o personalización
@@ -513,9 +516,20 @@ const TOOLS = [
     description: 'Llama esta función SIEMPRE que analices una imagen (foto o captura de pantalla) y NO puedas identificar con confianza qué producto es, incluso después de intentar leer el texto visible y clasificar el tipo de mueble. Es solo para seguimiento interno, no se le muestra al cliente tal cual.',
     parameters: { type: 'object', properties: {} },
   },
+  {
+    name: 'reportar_proveedor',
+    description: 'Úsalo cuando la persona NO es un cliente sino un PROVEEDOR o alguien que quiere VENDERLE a DeCasa o proponer una colaboración/alianza comercial (ej: "somos importadores/fabricantes de X", "quiero enviarles mi portafolio", "les ofrezco materia prima/tapas/piedra", "propuesta comercial", "trabajar juntos"). NO lo trates como cliente, NO agendes visita, NO le des ningún número. Solo se notifica internamente al equipo de compras.',
+    parameters: {
+      type: 'object',
+      properties: {
+        resumen: { type: 'string', description: 'Qué ofrece y el nombre/empresa de la persona si lo mencionó' },
+      },
+      required: ['resumen'],
+    },
+  },
 ]
 
-async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}, imageMimeType = 'image/jpeg') {
+async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}, imageMimeType = 'image/jpeg', contextoExtra = null) {
   const historial = await db.getHistorial(psid, 12)
 
   const userContent = imageBase64
@@ -527,6 +541,9 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
 
   const messages = [
     { role: 'system', content: buildSystemPrompt() },
+    // Contexto efímero (p.ej. los productos recién mostrados) — no se guarda en el
+    // historial, solo ayuda a resolver referencias en este turno.
+    ...(contextoExtra ? [{ role: 'system', content: contextoExtra }] : []),
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
     { role: 'user', content: userContent },
   ]
@@ -696,6 +713,17 @@ async function setCarrito(psid, carrito) {
   await db.setEstado(psid, { carrito: JSON.stringify(carrito) })
 }
 
+// Guarda (compacto) los productos que se le acaban de mostrar al cliente, para poder
+// resolver "esa / la segunda / la de $X" en el mensaje siguiente. No debe romper el
+// flujo si falla.
+async function recordarMostrados(psid, productos) {
+  try {
+    await db.setUltimosMostrados(psid, productos.slice(0, 6).map(p => ({
+      nombre: p.nombre, precio: parsearPrecio(p.precio),
+    })))
+  } catch (e) { console.warn('[mostrados] no se pudo guardar:', e.message) }
+}
+
 async function ejecutarTool(psid, nombre, args, userInfo) {
   switch (nombre) {
 
@@ -703,6 +731,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const resultados = buscarEnInventario(args.consulta, args.categoria ?? null, args.limite ?? 5)
       evento(psid, 'busqueda', args.consulta)
       if (!resultados.length) return `No encontré "${args.consulta}" en el inventario. ¿Puedes describir mejor lo que buscas?`
+      await recordarMostrados(psid, resultados)
       return resultados.map(formatProducto).join('\n\n')
     }
 
@@ -714,6 +743,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       }
       const resultados = base.sort((a, b) => Number(b.precio) - Number(a.precio)).slice(0, 5)
       if (!resultados.length) return `No encontré productos en ese presupuesto. ¿Quieres ver opciones cercanas a tu rango?`
+      await recordarMostrados(psid, resultados)
       return resultados.map(formatProducto).join('\n\n')
     }
 
@@ -721,6 +751,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const resultado = buscarEnInventario(args.nombre_producto)[0]
       if (!resultado) return `No encontré ese producto. ¿Puedes darme más detalles?`
       await db.setUltimoProducto(psid, { nombre: resultado.nombre, imagen: resultado.imagen ?? null, ts: Date.now() })
+      await recordarMostrados(psid, [resultado])
       evento(psid, 'producto_visto', resultado.nombre)
       if (resultado.imagen) {
         await ig.sendImageMessage(psid, resultado.imagen)
@@ -752,6 +783,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       }))
       const ok = await ig.sendCarousel(psid, elementos)
       await db.setUltimoProducto(psid, { nombre: encontrados[0].nombre, imagen: encontrados[0].imagen ?? null, ts: Date.now() })
+      await recordarMostrados(psid, encontrados)
       for (const p of encontrados) evento(psid, 'producto_visto', p.nombre)
       if (!ok) {
         // Degradación elegante: si el carrusel falla, el modelo lo presenta en texto.
@@ -840,6 +872,15 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         return 'Se avisó a un asesor porque ya van varios intentos sin identificar la imagen. Coméntale al cliente que un asesor también le va a ayudar con esto, sin dejar de mostrarle opciones parecidas.'
       }
       return 'Registrado. Sigue el flujo normal: pregunta si el cliente puede leer el nombre y muéstrale opciones parecidas según el tipo de mueble que identifiques.'
+    }
+
+    case 'reportar_proveedor': {
+      // El número del encargado va SOLO en la notificación interna (el equipo lo ve en
+      // el sistema de ventas), nunca en la respuesta al proveedor.
+      const resumenProv = `PROVEEDOR / PROPUESTA COMERCIAL 🏭\n${args.resumen || 'Sin detalle'}\nReenviar al encargado de compras (WhatsApp 3148622755).`
+      notificarRedes(psid, userInfo, resumenProv, 'otro')
+      evento(psid, 'proveedor', (args.resumen ?? '').substring(0, 120))
+      return 'Registrado como propuesta de proveedor/colaboración. Agradécele con amabilidad, dile que su propuesta ya fue enviada a nuestro equipo de compras y que lo contactarán por este mismo medio si hay interés. NO agendes visita, NO le des ningún número, NO le pidas datos como si fuera un cliente.'
     }
 
     case 'solicitar_asesor': {
@@ -1314,9 +1355,18 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
       return
     }
 
+    // Contexto de los productos recién mostrados (carrusel/foto/búsqueda), para que
+    // "esa / la segunda / la de $X" se resuelva. Es efímero: no se guarda en historial.
+    let contextoMostrados = null
+    const mostrados = await db.getUltimosMostrados(psid)
+    if (mostrados?.length) {
+      const lista = mostrados.map((p, i) => `${i + 1}) ${p.nombre} — $${Number(p.precio ?? 0).toLocaleString('es-CO')}`).join('; ')
+      contextoMostrados = `Productos que le mostraste al cliente hace un momento: ${lista}. Si el cliente dice "esa", "la segunda", "la primera", "la de $X", "la última", etc., se refiere a uno de estos — resuélvelo con esta lista y usa el nombre EXACTO.`
+    }
+
     // runAgentLoop lee el historial y le anexa el mensaje actual; guardamos el
     // mensaje del usuario DESPUÉS para no inyectarlo dos veces en el contexto.
-    const respuestaFinal = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo, imageMimeType)
+    const respuestaFinal = await runAgentLoop(psid, mensajeAI, imageBase64, userInfo, imageMimeType, contextoMostrados)
     await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
     if (respuestaFinal) {
       await ig.sendTextMessage(psid, respuestaFinal)
