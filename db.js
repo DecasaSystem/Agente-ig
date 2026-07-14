@@ -351,23 +351,18 @@ async function getCatalogos() {
   return rows
 }
 
-// Promoción temporal (20% dcto sofás/comedores, vigente hasta el 6 de julio de 2026).
-// Se deja como seed idempotente en vez de requerir acceso manual a la BD.
-async function seedCatalogosDescuento() {
-  const catalogos = [
-    ['catalogo_descuento_sofas', 'https://drive.google.com/file/d/1ZsxbGlUHoIOOkriFO3hTrgNnwD2y0fw0/view?usp=drive_link'],
-    ['catalogo_descuento_comedores', 'https://drive.google.com/file/d/1lHQbTEoaV-OBE4CQN89_A6YShJ4kj-Ok/view?usp=drive_link'],
-  ]
+// La promoción del 20% (sofás/comedores) venció el 6 de julio de 2026. Se eliminan sus
+// catálogos de la configuración en cada arranque para que no vuelvan a aparecer (ni en
+// el bot ni en el panel de herramientas del asesor), aunque una versión vieja los
+// hubiera sembrado antes.
+async function eliminarCatalogosDescuento() {
   try {
-    for (const [clave, valor] of catalogos) {
-      await pool.query(
-        'INSERT INTO configuracion (clave, valor) VALUES (?, ?) ON DUPLICATE KEY UPDATE valor = VALUES(valor)',
-        [clave, valor]
-      )
-    }
-    console.log('[db] catálogos de descuento sembrados OK')
+    const [res] = await pool.query(
+      "DELETE FROM configuracion WHERE clave IN ('catalogo_descuento_sofas', 'catalogo_descuento_comedores')"
+    )
+    if (res.affectedRows) console.log(`[db] catálogos de descuento eliminados (${res.affectedRows})`)
   } catch (e) {
-    console.error('[db] error sembrando catálogos de descuento:', e.message)
+    console.error('[db] error eliminando catálogos de descuento:', e.message)
   }
 }
 
@@ -623,7 +618,7 @@ module.exports = {
   limpiarHistorialAntiguo,
   getInventario,
   getCatalogos,
-  seedCatalogosDescuento,
+  eliminarCatalogosDescuento,
   consultarStock,
   getHashesProductos,
   upsertHashProducto,

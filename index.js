@@ -334,12 +334,7 @@ FORMAS DE PAGO Y DESCUENTOS:
 - Formas de pago: efectivo, transferencia bancaria, tarjeta de crédito/débito y ADDI (crédito)
 - DESCUENTOS: aplican SOLO con pago en efectivo o transferencia bancaria. NO aplican con tarjeta ni con ADDI. Si el cliente pregunta cuánto es el descuento → dile que aplica con efectivo o transferencia y que el valor varía, luego pregunta: "¿Quieres que te comunique con un asesor para que te indique el descuento exacto?" → solo transfiere si el cliente dice que sí
 - ADDI: es el único sistema de crédito que manejamos. Si el cliente pregunta por ADDI, Sistecredito, crédito, cuotas, financiación o cualquier otra forma de crédito → dile que el crédito disponible es ADDI y pregunta: "¿Quieres que te comunique con un asesor para darte todos los detalles?" → solo transfiere si el cliente dice que sí
-
-PROMOCIÓN VIGENTE (SOLO hasta el 6 de julio de 2026 — si FECHA ACTUAL ya pasó esa fecha, ignora esta sección por completo y no la menciones):
-- Tenemos 20% de descuento en sofás y comedores seleccionados. IMPORTANTE: NO es toda la categoría ni todos los colores/variantes de un modelo — son SOLO los productos puntuales que aparecen en el catálogo de descuento (PDF). Aunque un producto se llame igual a uno del catálogo (ej. "Sofá Prada"), NUNCA confirmes que tiene el descuento sin que el cliente lo haya visto en ese catálogo o sin que un asesor lo confirme
-- Si el cliente pregunta por sofás, comedores, ofertas, promociones o descuentos → menciónalo proactivamente: "¡Justo ahora estamos con 20% de descuento en sofás y comedores seleccionados! 🎉 ¿Quieres ver cuáles aplican?"
-- Si el cliente dice que sí → llama enviar_catalogo con categoria='descuento_sofas' y/o categoria='descuento_comedores' según lo que le interese (pregunta cuál si no lo dijo, o manda ambos si quiere ver los dos), y aclara: "Estos son los modelos que aplican para el 20% de descuento 😊"
-- Si el cliente pregunta si UN producto específico tiene el descuento, o pregunta el precio exacto con descuento, o cómo aplicarlo → llama solicitar_asesor. NUNCA confirmes ni calcules tú misma si un producto puntual aplica al descuento ni inventes el precio con descuento
+- NO hay ninguna promoción ni descuento por temporada vigente. Si el cliente pregunta por promociones, ofertas o "el 20%", NO inventes ninguna: dile que por ahora no tenemos una promoción especial, pero que con pago en efectivo o transferencia siempre hay un descuento y que un asesor le da el valor exacto.
 
 PROVEEDORES Y PROPUESTAS COMERCIALES:
 - Si quien escribe NO quiere comprar sino VENDERLE a DeCasa o proponer una alianza (dice que es proveedor/fabricante/importador, ofrece materia prima, tapas, piedra, telas, etc., quiere mandar su portafolio o "trabajar juntos") → NO es un cliente. Llama reportar_proveedor con un resumen de qué ofrece y su nombre/empresa. NO le agendes visita, NO le des ningún número ni WhatsApp, NO le hables de productos del catálogo. Solo agradece y dile que su propuesta la revisará nuestro equipo de compras y lo contactarán por aquí si hay interés.
@@ -505,7 +500,7 @@ const TOOLS = [
       properties: {
         categoria: {
           type: 'string',
-          description: 'Categoría del catálogo. Valores posibles: sofas, camas, bases_comedores, mesas_auxiliares, mesas_centro, mesas_noche, mesas_tv, sillas_auxiliares, sillas_barra, sofas_camas, sofas_modulares, cajoneros_bifes, descuento_sofas, descuento_comedores',
+          description: 'Categoría del catálogo. Valores posibles: sofas, camas, bases_comedores, mesas_auxiliares, mesas_centro, mesas_noche, mesas_tv, sillas_auxiliares, sillas_barra, sofas_camas, sofas_modulares, cajoneros_bifes',
         },
       },
       required: ['categoria'],
@@ -850,11 +845,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         url = entrada?.[1]
       }
       if (!url) return `No tengo catálogo disponible para esa categoría en este momento. Puedo mostrarte productos específicos si me dices qué buscas 😊`
-      const esDescuentoIG = cat.startsWith('descuento')
-      const mensajeCatalogo = esDescuentoIG
-        ? `Aquí tienes el catálogo con 20% de descuento 🎉 (válido hasta el 6 de julio) — toca el enlace para verlo:\n${url}`
-        : `Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:\n${url}`
-      await ig.sendTextMessage(psid, mensajeCatalogo)
+      await ig.sendTextMessage(psid, `Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:\n${url}`)
       return `[Catálogo de ${cat} enviado exitosamente. El cliente ya recibió el enlace — haz seguimiento con una pregunta de cierre]`
     }
 
@@ -1591,7 +1582,7 @@ function revisarSeguridad() {
 async function startServer() {
   revisarSeguridad()
   await db.runMigrations()
-  await db.seedCatalogosDescuento()
+  await db.eliminarCatalogosDescuento()
   const refrescarInventarioYHashes = async () => {
     await cargarInventario()
     await sincronizarHashesCatalogo()
