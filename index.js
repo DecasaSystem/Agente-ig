@@ -167,10 +167,10 @@ const correr = (psid, ...args) =>
 
 // Punto de entrada desde el webhook. Acumula todo lo que llegue en la ventana de
 // debounce y lo procesa como un solo turno.
-function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) {
+function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false) {
   let buf = buffers.get(psid)
   if (!buf) {
-    buf = { textos: [], adjuntos: null, esStory: false, storyUrl: null, storyId: null, timer: null }
+    buf = { textos: [], adjuntos: null, esStory: false, storyUrl: null, storyId: null, noSoportado: false, timer: null }
     buffers.set(psid, buf)
   }
 
@@ -179,6 +179,7 @@ function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) 
   // normal es una sola imagen o publicación por turno).
   if (adjuntos?.length) buf.adjuntos = adjuntos
   if (esStoryReply) { buf.esStory = true; buf.storyUrl = storyUrl; buf.storyId = storyId }
+  if (noSoportado) buf.noSoportado = true
 
   if (buf.timer) clearTimeout(buf.timer)
   buf.timer = setTimeout(() => {
@@ -190,6 +191,7 @@ function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) 
       buf.esStory,
       buf.storyUrl,
       buf.storyId,
+      buf.noSoportado,
     ))
   }, DEBOUNCE_MS)
 }
@@ -338,6 +340,11 @@ FORMAS DE PAGO Y DESCUENTOS:
 
 PROVEEDORES Y PROPUESTAS COMERCIALES:
 - Si quien escribe NO quiere comprar sino VENDERLE a DeCasa o proponer una alianza (dice que es proveedor/fabricante/importador, ofrece materia prima, tapas, piedra, telas, etc., quiere mandar su portafolio o "trabajar juntos") → NO es un cliente. Llama reportar_proveedor con un resumen de qué ofrece y su nombre/empresa. NO le agendes visita, NO le des ningún número ni WhatsApp, NO le hables de productos del catálogo. Solo agradece y dile que su propuesta la revisará nuestro equipo de compras y lo contactarán por aquí si hay interés.
+
+MUEBLE A MEDIDA / FOTO DE UN MODELO:
+- En DeCasa FABRICAMOS a la medida: podemos hacer un mueble parecido al que el cliente quiera, en los puestos, medidas, color o material que pida.
+- Si el cliente manda (o dice que mandó) una FOTO de un mueble que quiere, o dice "quiero ESTE", "uno así", "como este", "igual a este", "me gusta este modelo" → NO es lo mismo que pedir un producto del catálogo. Muy probablemente quiere que se lo FABRIQUEMOS a la medida.
+- En ese caso: (1) NO le muestres el catálogo como si fueran "lo que busca"; (2) dile con entusiasmo que ese modelo se lo podemos fabricar a la medida 😊 y pregúntale detalles (medidas/puestos, color, material) si no los dio; (3) ofrécele pasarlo con un asesor para cotizarlo → llama solicitar_asesor con tipo 'personalizacion'. Opcionalmente puedes ofrecerle ver modelos parecidos que ya tenemos, pero dejando claro que el suyo lo hacemos a medida.
 
 CUÁNDO TRANSFERIR (llama solicitar_asesor inmediatamente):
 - El cliente confirma que SÍ quiere hablar con el asesor para detalles de ADDI, cuotas, financiación o descuentos exactos
@@ -1140,7 +1147,7 @@ function esVisualizacion(texto) {
 
 // ── Manejador principal de mensajes ───────────────────────────────────────────
 
-async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId) {
+async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false) {
   const userInfo = await getUserInfoCache(psid)
   await db.getOrCreateClienteByPsid(psid, userInfo.username, userInfo.nombre)
 
@@ -1326,6 +1333,14 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     }
   }
 
+  // El cliente mandó algo (casi siempre una foto) que Instagram no nos dejó ver, y no
+  // se identificó ningún producto por imagen. Se lo decimos al modelo para que lo
+  // reconozca — típicamente el cliente muestra un modelo que quiere, muchas veces para
+  // que se lo fabriquemos a la medida.
+  if (noSoportado && !imageBase64 && !mensajeAI.includes('COINCIDENCIA POR FOTO') && !mensajeAI.includes('Producto en inventario')) {
+    mensajeAI = `[El cliente envió una FOTO que no pudimos recibir por Instagram (no la vemos). Probablemente muestra un mueble/modelo que le interesa. NO asumas que es uno de nuestros productos ni le muestres opciones como si fuera "lo que busca": primero pídele con amabilidad que te la reenvíe o que te describa el mueble (tipo, medidas, color). Y recuerda que en DeCasa fabricamos a la medida: si quiere un mueble como el de su foto, podemos hacérselo — para eso ofrécele pasarlo con un asesor (personalización).]\n${mensajeAI}`
+  }
+
   if (!mensajeAI.trim()) return
 
   // Detectar primer mensaje ANTES de guardar para que el historial esté vacío
@@ -1438,6 +1453,10 @@ async function procesarEventos(body) {
       const storyReply = !!event.message?.reply_to?.story
       const storyUrl   = event.message?.reply_to?.story?.url ?? null
       const storyId    = event.message?.reply_to?.story?.id ?? null
+      // Instagram marca así los mensajes cuyo contenido la API no puede recibir (a
+      // veces fotos/adjuntos): llega sin imagen usable. Nos sirve para saber que el
+      // cliente SÍ mandó algo (probablemente una foto) aunque no la podamos ver.
+      const noSoportado = !!event.message?.is_unsupported
 
       if (!psid) continue
 
@@ -1450,7 +1469,11 @@ async function procesarEventos(body) {
         continue
       }
 
-      recibirMensaje(psid, texto, adjuntos, storyReply, storyUrl, storyId)
+      // Un mensaje no soportado sin texto ni adjunto igual se procesa (para avisarle al
+      // cliente que no vimos su foto), así que no se descarta por venir "vacío".
+      if (texto === null && !adjuntos?.length && !storyReply && !noSoportado) continue
+
+      recibirMensaje(psid, texto, adjuntos, storyReply, storyUrl, storyId, noSoportado)
     }
   }
 }
