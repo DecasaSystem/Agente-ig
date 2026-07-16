@@ -605,7 +605,8 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
 
   evento(psid, 'sin_resolver', 'limite de rondas')
   await enviarNotificacionSistema(psid, userInfo, 'La IA no pudo resolver la solicitud tras varios intentos (límite de rondas de herramientas alcanzado). Revisar conversación.', 'asesor').catch(err => console.error('[redes] no se pudo notificar límite de rondas:', err.message))
-  return 'Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏'
+  const avisoRondas = avisoFueraHorario()
+  return `Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏${avisoRondas ? `\n\n${avisoRondas}` : ''}`
 }
 
 // ── Herramientas ──────────────────────────────────────────────────────────────
@@ -874,7 +875,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
           `El cliente ha enviado ${intentos} imágenes/capturas seguidas que la IA no pudo identificar en el inventario. Revisar la conversación y ayudarle manualmente a encontrar el producto.`,
           'asesor'
         ).catch(e => console.error('[redes] no se pudo notificar imagen no identificada:', e.message))
-        return 'Se avisó a un asesor porque ya van varios intentos sin identificar la imagen. Coméntale al cliente que un asesor también le va a ayudar con esto, sin dejar de mostrarle opciones parecidas.'
+        return `Se avisó a un asesor porque ya van varios intentos sin identificar la imagen. Coméntale al cliente que un asesor también le va a ayudar con esto, sin dejar de mostrarle opciones parecidas.${avisoFueraHorario() ? ' IMPORTANTE: estamos fuera de horario (Lun-Vie 8am-5pm, Sáb 8am-12pm), avísale que el asesor le responderá en el próximo horario hábil para que no espere.' : ''}`
       }
       return 'Registrado. Sigue el flujo normal: pregunta si el cliente puede leer el nombre y muéstrale opciones parecidas según el tipo de mueble que identifiques.'
     }
@@ -915,8 +916,12 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         { alFallar: () => db.marcarTransferido(psid, false) }
       )
 
-      const aviso = avisoFueraHorario()
-      return `Entendido, voy a conectarte con uno de nuestros asesores 😊${aviso ? `\n\n${aviso}` : ''}`
+      // Fuera de horario: se lo devolvemos al modelo como INSTRUCCIÓN (no como texto a
+      // relayar), para que SIEMPRE le avise al cliente que el asesor responderá en el
+      // próximo horario hábil y no se quede esperando.
+      return avisoFueraHorario()
+        ? 'Confírmale al cliente que lo estás conectando con un asesor 😊, y AVÍSALE SIEMPRE que en este momento estamos fuera del horario de atención (Lun-Vie 8am-5pm, Sáb 8am-12pm), así que el asesor le responderá apenas abra el próximo horario hábil — para que no se quede esperando. Sé cálida y agradece su paciencia.'
+        : 'Confírmale al cliente que lo estás conectando con un asesor que lo atenderá pronto 😊.'
     }
 
     case 'ver_carrito': {
@@ -988,8 +993,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         { carrito }
       )
       await setCarrito(psid, [])
+      const avisoPedido = avisoFueraHorario()
       await ig.sendTextMessage(psid,
-        `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊`
+        `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de DeCasa te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir DeCasa! 😊${avisoPedido ? `\n\n${avisoPedido}` : ''}`
       )
       return `[Confirmación de pedido enviada al cliente con el resumen completo. Solo despídete con una frase corta, sin repetir el resumen.]`
     }
@@ -1393,7 +1399,8 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
     console.error('[AI] Error:', e.message)
     await db.guardarMensaje(psid, 'user', imageBase64 ? `${mensajeAI} [+imagen]` : mensajeAI)
     await enviarNotificacionSistema(psid, userInfo, `Error técnico procesando el mensaje del cliente: ${e.message}. Revisar y contactar manualmente.`, 'asesor').catch(err => console.error('[redes] no se pudo notificar error:', err.message))
-    await ig.sendTextMessage(psid, 'Tuve un problema procesando tu mensaje. Un asesor te contactará pronto 🙏')
+    const avisoError = avisoFueraHorario()
+    await ig.sendTextMessage(psid, `Tuve un problema procesando tu mensaje. Un asesor te contactará pronto 🙏${avisoError ? `\n\n${avisoError}` : ''}`)
   }
 }
 
