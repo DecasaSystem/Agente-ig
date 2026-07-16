@@ -230,6 +230,11 @@ async function getUserInfoCache(psid) {
   return data
 }
 
+// Aviso automático que envía la IA mientras el cliente está con un asesor. Se usa como
+// constante para poder distinguirlo del texto que escribe el asesor (y no guardarlo
+// como contexto ni contarlo como mensaje del asesor).
+const AVISO_ESPERA = 'Tu mensaje fue recibido, un asesor te responderá pronto 😊'
+
 // Red de seguridad extra contra el bucle del aviso "tu mensaje fue recibido": aunque
 // ya se filtran los ecos arriba, si algo se cuela igual (otro caso no previsto de
 // Meta) esto evita que se repita en ráfaga — como mucho una vez cada 2 minutos por
@@ -275,6 +280,8 @@ CATEGORÍAS:
 camas | bases_comedores | sillas_comedor | sillas_auxiliares | sillas_barra
 mesas_centro | mesas_auxiliares | mesas_noche | mesas_tv
 sofas | sofas_modulares | sofas_camas | cajoneros_bifes | escritorios | colchones
+
+HISTORIAL: En la conversación anterior puede haber mensajes que empiezan con "[Asesor]" — esos los escribió un asesor HUMANO de DeCasa (no tú). Léelos como contexto de lo que ya se habló con el cliente y continúa la conversación con naturalidad, sin repetir lo ya dicho ni contradecir al asesor. No presentes esos mensajes como si fueran tuyos, y si el asesor prometió algo puntual (un precio especial, un plazo), no lo confirmes tú: ofrece pasar de nuevo con un asesor si hace falta.
 
 INSTRUCCIONES OBLIGATORIAS:
 1. SIEMPRE usa buscar_productos antes de mencionar cualquier producto o precio
@@ -1163,8 +1170,12 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
   // puede abrir el chat directamente.
   if (await db.debeEsperarAsesor(psid)) {
     await db.actualizarInteraccion(psid)
+    // Guardar lo que el cliente escribe MIENTRAS lo atiende un asesor, para que la IA
+    // tenga contexto si retoma el chat (Terminar en el panel de Redes o timeout).
+    const contenidoCliente = texto?.trim() || (adjuntos?.length ? '[el cliente envió una imagen/adjunto]' : null)
+    if (contenidoCliente) await db.guardarMensaje(psid, 'user', contenidoCliente)
     if (debeEnviarAvisoEspera(psid)) {
-      await ig.sendTextMessage(psid, 'Tu mensaje fue recibido, un asesor te responderá pronto 😊')
+      await ig.sendTextMessage(psid, AVISO_ESPERA)
     }
     return
   }
@@ -1430,15 +1441,22 @@ async function procesarEventos(body) {
     }
 
     for (const event of entry.messaging ?? []) {
-      // Ignorar ecos (mensajes propios del bot). `is_echo` no siempre llega marcado
-      // por Instagram para mensajes enviados por un humano desde la app nativa (no vía
-      // API) — eso causó un bucle real: un asesor le escribió al cliente desde el
-      // Instagram de DeCasa, ese envío se coló como si fuera un mensaje del cliente,
-      // el bot respondió "tu mensaje fue recibido", esa respuesta también se coló, y
-      // así indefinidamente. Filtro extra: cualquier evento cuyo sender sea nuestra
-      // propia cuenta (no un cliente real) se ignora sin importar is_echo.
-      if (event.message?.is_echo) continue
-      if (event.sender?.id && event.sender.id === process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID) continue
+      // Mensajes "de nuestro lado": ecos del propio bot, o lo que un asesor escribe
+      // desde el Instagram de DeCasa (llega como is_echo o con sender = nuestra cuenta).
+      // Antes se descartaban del todo (arreglo del bucle en que el asesor le escribía al
+      // cliente y el bot lo reprocesaba). Ahora, si el chat está tomado por un asesor,
+      // guardamos lo que el asesor escribió para que la IA tenga contexto al retomar. Los
+      // envíos de la propia IA no se guardan aquí (ya los guarda ella cuando responde).
+      const esNuestro = !!event.message?.is_echo ||
+        (event.sender?.id && event.sender.id === process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID)
+      if (esNuestro) {
+        const psidCliente = event.recipient?.id // en un eco, el destinatario es el cliente
+        const textoAsesor = event.message?.text
+        if (psidCliente && textoAsesor) {
+          guardarMensajeAsesor(psidCliente, textoAsesor).catch(e => console.warn('[asesor] no se pudo guardar:', e.message))
+        }
+        continue
+      }
 
       const psid       = event.sender?.id
       // quick_reply (botón bajo un texto) y postback (botón de carrusel) llegan como
@@ -1476,6 +1494,22 @@ async function procesarEventos(body) {
       recibirMensaje(psid, texto, adjuntos, storyReply, storyUrl, storyId, noSoportado)
     }
   }
+}
+
+// Guarda un mensaje que un asesor humano le escribió al cliente, PERO solo mientras el
+// chat está tomado por un asesor (transferido). Así la IA tiene contexto de lo que se
+// habló cuando retome el chat. No guarda los envíos de la propia IA: cuando NO está
+// transferido, ella misma guarda sus mensajes; y su aviso automático ("un asesor te
+// responderá") se ignora explícitamente.
+async function guardarMensajeAsesor(psid, texto) {
+  if (texto === AVISO_ESPERA) return
+  const estado = await db.getEstado(psid)
+  if (!estado?.transferido) return
+  // Evitar duplicar el eco del último mensaje de la propia IA (p.ej. "voy a conectarte
+  // con un asesor", que ella envía justo antes de quedar transferida y guarda por su cuenta).
+  const ult = await db.getHistorial(psid, 1)
+  if (ult[0]?.role === 'assistant' && ult[0].content === texto) return
+  await db.guardarMensaje(psid, 'assistant', `[Asesor] ${texto}`)
 }
 
 // ── Comentarios en publicaciones → invitar al DM ──────────────────────────────
