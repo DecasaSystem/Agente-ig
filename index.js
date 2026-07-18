@@ -542,6 +542,14 @@ const TOOLS = [
   },
 ]
 
+// Log del consumo de tokens de un turno, con costo estimado (tarifas gpt-4o:
+// $2.50/1M tokens de entrada, $10/1M de salida). Permite auditar el gasto desde los
+// logs sin depender solo del dashboard de OpenAI.
+function logUsoTokens(psid, promptTok, completionTok, rondas) {
+  const costo = (promptTok / 1e6) * 2.5 + (completionTok / 1e6) * 10
+  console.log(`[tokens] ${psid} · ${rondas} ronda(s) · entrada ${promptTok} · salida ${completionTok} · ~$${costo.toFixed(4)}`)
+}
+
 async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}, imageMimeType = 'image/jpeg', contextoExtra = null) {
   const historial = await db.getHistorial(psid, 12)
 
@@ -552,13 +560,16 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       ]
     : mensajeUsuario
 
+  // Guardamos una referencia al mensaje del usuario para poder quitarle la imagen en
+  // las rondas siguientes (ver más abajo) sin re-facturar los tokens de visión.
+  const userMsg = { role: 'user', content: userContent }
   const messages = [
     { role: 'system', content: buildSystemPrompt() },
     // Contexto efímero (p.ej. los productos recién mostrados) — no se guarda en el
     // historial, solo ayuda a resolver referencias en este turno.
     ...(contextoExtra ? [{ role: 'system', content: contextoExtra }] : []),
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
-    { role: 'user', content: userContent },
+    userMsg,
   ]
 
   const tools = TOOLS.map(t => ({
@@ -571,6 +582,10 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   // "inventado" un total del carrito, que es una suma que no existe como precio suelto.
   const preciosVistos = new Set()
 
+  // Contadores de tokens para auditar el gasto real por conversación (OpenAI los
+  // devuelve en response.usage). Se logean al terminar el turno.
+  let tokPrompt = 0, tokCompletion = 0
+
   for (let round = 0; round < 5; round++) {
     if (round > 0) await ig.sendTypingOn(psid)
     const response = await openai.chat.completions.create({
@@ -582,11 +597,17 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       max_tokens:  600,
     })
 
+    if (response.usage) {
+      tokPrompt     += response.usage.prompt_tokens     ?? 0
+      tokCompletion += response.usage.completion_tokens ?? 0
+    }
+
     const choice = response.choices[0]
 
     if (choice.finish_reason !== 'tool_calls' || !choice.message.tool_calls?.length) {
       const texto = choice.message.content ?? ''
       validarPrecios(psid, texto, preciosVistos)
+      logUsoTokens(psid, tokPrompt, tokCompletion, round + 1)
       return texto
     }
 
@@ -605,10 +626,20 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
         content:      resultStr,
       })
     }
+
+    // La imagen ya se analizó en la primera ronda a MÁXIMA calidad (detail:'high').
+    // En las rondas siguientes el modelo solo procesa resultados de herramientas y NO
+    // necesita "ver" de nuevo la foto, así que la quitamos del mensaje para no
+    // re-facturar los tokens de visión (que en 'high' son caros) en cada ronda. La
+    // calidad del análisis NO baja porque la ronda 0 sí usó la imagen completa.
+    if (imageBase64 && Array.isArray(userMsg.content)) {
+      userMsg.content = mensajeUsuario
+    }
   }
 
   evento(psid, 'sin_resolver', 'limite de rondas')
   await enviarNotificacionSistema(psid, userInfo, 'La IA no pudo resolver la solicitud tras varios intentos (límite de rondas de herramientas alcanzado). Revisar conversación.', 'asesor').catch(err => console.error('[redes] no se pudo notificar límite de rondas:', err.message))
+  logUsoTokens(psid, tokPrompt, tokCompletion, 5)
   const avisoRondas = avisoFueraHorario()
   return `Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏${avisoRondas ? `\n\n${avisoRondas}` : ''}`
 }
