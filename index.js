@@ -670,7 +670,15 @@ function levenshtein(a, b) {
 
 function fuzzyWord(word, targetWords) {
   const maxDist = word.length <= 5 ? 1 : 2
-  return targetWords.some(w => w.length > 2 && levenshtein(word, w) <= maxDist)
+  return targetWords.some(w => {
+    if (w.length <= 2) return false
+    const d = levenshtein(word, w)
+    if (d <= maxDist) return true
+    // Nombres propios cortos con misma raíz pero errata/variante fonética
+    // ("fiji" ↔ "figy"): se aceptan hasta 2 ediciones si comparten el prefijo de 2
+    // letras. La guarda de prefijo evita falsos positivos entre palabras cortas.
+    return word.length >= 4 && w.length >= 4 && word.slice(0, 2) === w.slice(0, 2) && d <= 2
+  })
 }
 
 // Tokeniza quitando puntuación pero conservando dígitos: "1.20 x 0.90 (4 Puestos)"
@@ -720,6 +728,10 @@ function scoring(p, q, qWords) {
   const subWords    = tokens(sub)
   const medidaWords = tokens(p.medidas)
   const material    = normalize(p.material ?? '')
+  // Versiones "pegadas" para cuando el cliente escribe todo junto ("sofacama" ↔
+  // "sofa cama"): se compara sin espacios contra el nombre y la subcategoría.
+  const nombreCompacto = nombreWords.join('')
+  const subCompacto    = subWords.join('')
   let score = 0
   if (nombre === q)            score += 100
   if (q && nombre.includes(q)) score += 60
@@ -727,10 +739,12 @@ function scoring(p, q, qWords) {
   for (const w of qWords) {
     // Se saltan palabras de ≤2 letras salvo que sean números (p.ej. "4" puestos).
     if (w.length <= 2 && !/^\d+$/.test(w)) continue
-    if (nombreWords.includes(w))        score += 20
-    else if (fuzzyWord(w, nombreWords)) score += 12
-    if (subWords.includes(w))           score += 12
-    else if (fuzzyWord(w, subWords))    score += 8
+    if (nombreWords.includes(w))                           score += 20
+    else if (fuzzyWord(w, nombreWords))                    score += 12
+    else if (w.length >= 5 && nombreCompacto.includes(w))  score += 16
+    if (subWords.includes(w))                              score += 12
+    else if (fuzzyWord(w, subWords))                       score += 8
+    else if (w.length >= 5 && subCompacto.includes(w))     score += 10
     if (medidaWords.includes(w))        score += 8
     if (w.length > 3 && material.includes(w)) score += 6
   }
