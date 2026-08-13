@@ -205,3 +205,116 @@ test('consultar_estado: resume carrito, ultimo producto y citas sin tocar db.poo
     Object.assign(db, originales)
   }
 })
+
+// ── Respuesta pública a comentarios ───────────────────────────────────────────
+// Lo que se escribe en un comentario lo lee todo el mundo, así que lo importante de
+// estos tests es lo que NO se responde.
+
+test('clasificarComentario: temas que sí se responden en público', () => {
+  assert.equal(clasif('donde quedan?'), 'ubicacion')
+  assert.equal(clasif('en que ciudad estan ubicados'), 'ubicacion')
+  assert.equal(clasif('tienen sede en Pereira?'), 'ubicacion')
+  assert.equal(clasif('cual es el horario?'), 'horario')
+  assert.equal(clasif('a que hora abren los sabados'), 'horario')
+  assert.equal(clasif('tienen catalogo?'), 'catalogo')
+  assert.equal(clasif('me pasan el portafolio'), 'catalogo')
+})
+
+test('clasificarComentario: el precio se trata como consulta, nunca se responde en público', () => {
+  for (const t of ['cuanto vale?', 'precio?', 'que valor tiene', 'cuanto cuesta el sofa']) {
+    assert.equal(clasif(t), 'consulta', `"${t}" debería ser consulta`)
+  }
+  // Y la respuesta pública de una consulta jamás lleva cifras
+  const publica = agente.respuestaPublicaComentario('consulta')
+  assert.match(publica, /privado/)
+  assert.doesNotMatch(publica, /\d{4,}|\$/)
+})
+
+test('clasificarComentario: los comentarios hostiles no reciben respuesta', () => {
+  for (const t of ['son unos estafadores', 'pesimo servicio nunca responden', 'esto es una porqueria',
+                   'me robaron el dinero', 'voy a poner una demanda', 'que basura de muebles']) {
+    assert.equal(clasif(t), 'hostil', `"${t}" debería ser hostil`)
+  }
+  assert.equal(agente.respuestaPublicaComentario('hostil'), null)
+})
+
+test('clasificarComentario: ignora los comentarios que no preguntan nada', () => {
+  for (const t of ['que hermoso 😍', '🔥🔥🔥', '@maria mira esto', 'felicitaciones', '']) {
+    assert.equal(clasif(t), null, `"${t}" no debería clasificarse`)
+  }
+})
+
+test('respuestaPublicaComentario: ubicación y horario dan el dato, sin precios', () => {
+  const ubi = agente.respuestaPublicaComentario('ubicacion')
+  assert.match(ubi, /Armenia/)
+  assert.match(ubi, /Pereira/)
+  assert.doesNotMatch(ubi, /\$/)
+
+  const hor = agente.respuestaPublicaComentario('horario')
+  assert.match(hor, /8am-5pm/)
+  assert.match(hor, /domingo/i)
+
+  // El catálogo se anuncia en público pero el enlace va por privado
+  const cat = agente.respuestaPublicaComentario('catalogo')
+  assert.match(cat, /privado/)
+  assert.doesNotMatch(cat, /http/)
+})
+
+test('mensajePrivadoCatalogo: manda el de la categoría pedida y si no, pregunta', () => {
+  // Sin catálogos cargados no puede adivinar, así que pregunta
+  const generico = agente.mensajePrivadoCatalogo('tienen catalogo?')
+  assert.match(generico, /sof[aá]s, camas, comedores/)
+  assert.doesNotMatch(generico, /http/)
+})
+
+function clasif(t) { return agente.clasificarComentario(t) }
+
+test('clasificarComentario: no responde a menciones casuales de ciudad o día', () => {
+  // Antes "saludos desde Armenia" hacía que la cuenta soltara sus 5 direcciones debajo
+  // de la foto, y "feliz sábado" el horario de atención.
+  for (const t of ['saludos desde Armenia 😍', 'feliz sabado!', 'que lindo, un abrazo desde Pereira',
+                   'me encanta el domingo con estos muebles']) {
+    assert.equal(clasif(t), null, `"${t}" no debería disparar respuesta pública`)
+  }
+})
+
+test('clasificarComentario: lo hostil gana aunque venga con una pregunta', () => {
+  assert.equal(clasif('cuanto vale? son unos estafadores'), 'hostil')
+  assert.equal(clasif('donde quedan? nunca responden'), 'hostil')
+  assert.equal(clasif('esto no vale nada'), 'hostil')
+})
+
+test('manejarComentario: responde en público Y por privado', async () => {
+  const ig = require('../instagram.js')
+  const db = require('../db.js')
+  const orig = { reply: ig.replyToComment, priv: ig.sendPrivateReplyToComment, reg: db.registrarComentario }
+  const llamadas = { publicas: [], privadas: [] }
+  ig.replyToComment = async (id, texto) => { llamadas.publicas.push({ id, texto }); return true }
+  ig.sendPrivateReplyToComment = async (id, texto) => { llamadas.privadas.push({ id, texto }); return true }
+  db.registrarComentario = async () => true
+
+  try {
+    await agente.manejarComentario({ id: 'c1', text: 'donde quedan?', from: { id: 'otro' } })
+    assert.equal(llamadas.publicas.length, 1)
+    assert.match(llamadas.publicas[0].texto, /Armenia/)
+    assert.equal(llamadas.privadas.length, 1, 'el privado se sigue enviando')
+
+    // Una consulta de precio: acuse en público, sin cifras
+    await agente.manejarComentario({ id: 'c2', text: 'cuanto vale?', from: { id: 'otro' } })
+    assert.match(llamadas.publicas[1].texto, /privado/)
+    assert.doesNotMatch(llamadas.publicas[1].texto, /\$|\d{4,}/)
+
+    // Hostil: ni pública ni privada
+    await agente.manejarComentario({ id: 'c3', text: 'son unos estafadores', from: { id: 'otro' } })
+    assert.equal(llamadas.publicas.length, 2, 'no debe responder en público a un hostil')
+    assert.equal(llamadas.privadas.length, 2, 'tampoco por privado')
+
+    // Comentario sin pregunta: no se responde
+    await agente.manejarComentario({ id: 'c4', text: 'que hermoso 😍', from: { id: 'otro' } })
+    assert.equal(llamadas.publicas.length, 2)
+  } finally {
+    ig.replyToComment = orig.reply
+    ig.sendPrivateReplyToComment = orig.priv
+    db.registrarComentario = orig.reg
+  }
+})

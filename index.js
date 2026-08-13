@@ -1719,6 +1719,67 @@ function comentarioEsConsulta(texto) {
   return /(precio|vale|cuanto|cuesta|valor|costo|medida|tama|dimension|disponible|disponibilidad|hay|tienen|queda|consigo|comprar|domicilio|envio|cuota|credito|addi|informacion|info|interesa|me\s+gusta\s+cuanto)/.test(t)
 }
 
+// ── Respuesta pública a comentarios ───────────────────────────────────────────
+// Lo que se escribe en un comentario lo lee todo el mundo y queda ahí, así que la
+// clasificación es por reglas y no por IA: el modelo podría inventarse un precio o
+// picar el anzuelo de un comentario provocador, y eso en público no se puede deshacer.
+// La lista es blanca — si un comentario no encaja en ninguna categoría, no se responde.
+
+// Comentarios agresivos o de queja pública: no se contesta NADA (ni público ni privado).
+// Discutir en comentarios solo alimenta el hilo, y una respuesta automática a una queja
+// real se lee como si la marca no estuviera escuchando. Lo atiende una persona.
+function comentarioEsHostil(texto) {
+  const t = normalize(texto)
+  return /(estafa|estafador|ladron|roban|robaron|rateros|pesim[ao]|horrible|basura|porqueria|no\s+sirve|no\s+val(e|en)\s+(nada|la\s+pena)|nunca\s+(mas|responden|contestan)|denuncia|demanda|tutela|fraude|incumpl|mentira|mentiroso|verguenza|maldit|idiota|imbecil|estupid|tarad|hp\b|hijuep|gonorrea|malparid|put[ao]\b|mierda|cagada|jodid)/.test(t)
+}
+
+// Temas que SÍ se pueden responder en el comentario: son datos públicos, fijos y que no
+// dependen del producto. Nada de precios, medidas ni disponibilidad.
+//
+// Las reglas piden intención explícita de preguntar, no solo que aparezca la palabra: un
+// "saludos desde Armenia" o un "feliz sábado" no deben provocar que la cuenta suelte sus
+// direcciones o su horario debajo de la foto.
+function clasificarComentario(texto) {
+  const t = normalize(texto)
+  if (comentarioEsHostil(t)) return 'hostil'
+
+  const preguntaUbicacion =
+    /(donde\s+(estan|queda|es|los\s+ubico|puedo\s+ver|los\s+encuentro)|ubicacion|ubicados|direccion|sedes?\b|almacen|tienda\s+(fisica|queda|estan|hay)|en\s+que\s+ciudad|como\s+llego)/.test(t) ||
+    /(tienen|hay|abrieron|queda|estan).*(armenia|pereira|quindio|risaralda)/.test(t) ||
+    /(armenia|pereira|quindio|risaralda).*(tienen|hay|sede|tienda|queda|estan)/.test(t)
+  if (preguntaUbicacion) return 'ubicacion'
+
+  const preguntaHorario =
+    /(horario|a\s+que\s+hora|que\s+hora|hora\s+(abren|cierran|atienden)|abren|cierran|atienden|estan\s+abiertos)/.test(t) ||
+    /(domingo|festivo|sabado)s?\s+(abren|atienden|trabajan|estan)/.test(t)
+  if (preguntaHorario) return 'horario'
+
+  if (/(catalogo|catalogos|portafolio|brochure|folleto)/.test(t)) return 'catalogo'
+  if (comentarioEsConsulta(t)) return 'consulta'
+  return null
+}
+
+const SEDES_PUBLICO = `📍 Armenia: Av. Bolívar #16N-26 · Km 2 vía El Edén · Km 1 vía Jardines
+📍 Pereira: C.C. Unicentro · Cra. 14 #11-93`
+
+const HORARIO_PUBLICO = '🕐 Lunes a viernes 8am-5pm y sábados 8am-12pm (domingos cerrado)'
+
+// Texto que se publica como respuesta al comentario, según el tema detectado.
+function respuestaPublicaComentario(tipo) {
+  switch (tipo) {
+    case 'ubicacion':
+      return `¡Hola! 😊 Estas son nuestras sedes:\n${SEDES_PUBLICO}\n\n¡Te esperamos! 🛋️`
+    case 'horario':
+      return `¡Hola! 😊 Nuestro horario es:\n${HORARIO_PUBLICO}\n\n¡Te esperamos! 🛋️`
+    case 'catalogo':
+      return '¡Claro que sí! 😊 Te acabamos de escribir por privado para enviarte el catálogo 📩'
+    case 'consulta':
+      return '¡Hola! 😊 Ya te escribimos al privado para resolver tu duda 📩'
+    default:
+      return null
+  }
+}
+
 async function manejarComentario(value) {
   const commentId = value?.id
   const texto     = value?.text ?? ''
@@ -1727,14 +1788,62 @@ async function manejarComentario(value) {
   if (!commentId) return
   // No responder los comentarios propios de la cuenta.
   if (fromId && fromId === process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID) return
-  // Solo consultas de precio/disponibilidad; lo demás se ignora.
-  if (!comentarioEsConsulta(texto)) return
+
+  const tipo = clasificarComentario(texto)
+  // Sin tema reconocible ("qué lindo 😍", etiquetas a amigos) no hay nada que responder.
+  // Los hostiles se dejan para una persona: contestarles en automático empeora el hilo.
+  if (!tipo || tipo === 'hostil') {
+    if (tipo === 'hostil') console.log(`[comentario] ${commentId} clasificado como hostil, se deja a un humano`)
+    return
+  }
+
   // Una sola respuesta por comentario (Meta lo exige y evita spam).
   if (!(await db.registrarComentario(commentId))) return
 
-  const respuesta = '¡Hola! 😊 Con gusto te damos toda la info por aquí en privado. ¿Qué mueble te interesa? 🛋️'
-  const ok = await ig.sendPrivateReplyToComment(commentId, respuesta)
+  // 1) Respuesta pública, con datos fijos que no dependen del producto: nunca precios.
+  const publica = respuestaPublicaComentario(tipo)
+  if (publica) {
+    const okPublica = await ig.replyToComment(commentId, publica)
+    console.log(`[comentario] respuesta pública (${tipo}) ${okPublica ? 'enviada' : 'falló'} para ${commentId}`)
+  }
+
+  // 2) Mensaje privado: es donde de verdad se resuelve la consulta. Para el catálogo se
+  //    manda el de la categoría que pidió, si se puede deducir del propio comentario.
+  const privada = tipo === 'catalogo'
+    ? mensajePrivadoCatalogo(texto)
+    : '¡Hola! 😊 Con gusto te damos toda la info por aquí en privado. ¿Qué mueble te interesa? 🛋️'
+  const ok = await ig.sendPrivateReplyToComment(commentId, privada)
   if (ok) console.log(`[comentario] respuesta privada enviada para comment ${commentId}`)
+}
+
+// Arma el DM del catálogo. Si en el comentario se adivina la categoría ("catálogo de
+// sofás") se manda ese enlace; si no, se le pregunta cuál quiere en vez de soltarle los
+// quince.
+function mensajePrivadoCatalogo(texto) {
+  const t = normalize(texto)
+  const porCategoria = [
+    ['sofas_camas',      /sofa\s*cama|sofacama/],
+    ['sofas_modulares',  /modular/],
+    ['sofas',            /sofa|sala/],
+    ['camas',            /cama|alcoba|dormitorio/],
+    ['colchones',        /colchon/],
+    ['bases_comedores',  /comedor|base|mesa\s+de\s+comedor/],
+    ['sillas_comedor',   /silla.*comedor|comedor.*silla/],
+    ['sillas_barra',     /barra|bar\b/],
+    ['sillas_auxiliares',/silla/],
+    ['mesas_centro',     /mesa\s*de\s*centro|centro/],
+    ['mesas_noche',      /mesa\s*de\s*noche|nochero/],
+    ['mesas_tv',         /tv|televisor|rack/],
+    ['mesas_auxiliares', /mesa/],
+    ['escritorios',      /escritorio|estudio|oficina/],
+    ['cajoneros_bifes',  /cajonera|cajonero|bife|comoda/],
+  ]
+  for (const [clave, re] of porCategoria) {
+    if (re.test(t) && catalogosDB[clave]) {
+      return `¡Hola! 😊 Aquí tienes nuestro catálogo:\n${catalogosDB[clave]}\n\n¿Hay algún mueble que te haya gustado? Con gusto te ayudo 🛋️`
+    }
+  }
+  return '¡Hola! 😊 Con gusto te comparto nuestro catálogo. ¿De qué te interesa: sofás, camas, comedores, colchones, mesas o sillas? 🛋️'
 }
 
 // ── Validación de firma ───────────────────────────────────────────────────────
@@ -1875,6 +1984,8 @@ module.exports = {
   comentarioEsConsulta, payloadAIntent, normalize,
   buscarEnInventario,
   ejecutarTool,
+  clasificarComentario, respuestaPublicaComentario, comentarioEsHostil, mensajePrivadoCatalogo,
+  manejarComentario,
   // Variantes de precio (un producto con varias medidas que valen distinto)
   infoPrecioVariantes, precioMinimo, encontrarVariante, formatProducto, etiquetaPrecio,
   encolar,
