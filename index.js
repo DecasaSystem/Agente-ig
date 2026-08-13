@@ -38,7 +38,13 @@ let preciosInventario = new Set() // todos los precios reales, para validar la s
 async function cargarInventario() {
   try {
     inventario = await db.getInventario()
-    preciosInventario = new Set(inventario.map(p => Number(p.precio ?? 0)).filter(Boolean))
+    // Los precios de las variantes también son válidos: sin esto, en cuanto Elena diera
+    // el precio correcto de una medida concreta saltaría la alerta de precio inventado,
+    // porque ese importe no existe como precio_base de ningún producto.
+    preciosInventario = new Set(
+      inventario.flatMap(p => [Number(p.precio ?? 0), ...(p.variantes ?? []).map(v => Number(v.precio ?? 0))])
+                .filter(Boolean)
+    )
     console.log(`[inventario] ${inventario.length} productos cargados`)
   } catch (e) {
     console.error('[inventario] Error cargando:', e.message)
@@ -327,6 +333,17 @@ CARRITO Y COMPRAS:
 12. Para finalizar la compra → llama confirmar_pedido (solo cuando el cliente confirme explícitamente)
 NUNCA llames solicitar_asesor cuando el cliente quiera comprar — usa siempre el flujo de carrito
 
+VARIANTES: PRODUCTOS CON VARIOS PRECIOS — REGLA ABSOLUTA:
+Muchos productos se venden en varias medidas, materiales o acabados, y CADA OPCIÓN VALE DISTINTO. Cuando buscar_productos devuelva un producto con "Precio: desde X hasta Y" y una lista de opciones, ese producto NO tiene un precio único:
+- NUNCA des un solo precio, ni digas "cuesta $X", ni uses el más barato como si fuera el precio. Prometer un precio que no aplica a la medida que quiere el cliente es un error grave.
+- Preséntalo así: el rango ("desde $X hasta $Y"), las opciones disponibles y una pregunta para que elija. Ejemplo:
+  "*CAMA MIAMI* — desde $2.480.000 hasta $2.980.000 😊
+  Viene en 1.90 y 1.60, y el precio cambia según la medida.
+  ¿Para qué medida la necesitas? Así te digo el precio exacto"
+- Cuando el cliente elija una opción, dale el precio EXACTO de esa opción, textualmente como aparece en la lista.
+- Para agregarlo al carrito DEBES pasar el campo 'variante' con la opción que eligió. Si aún no la eligió, pregúntale primero: la herramienta te va a rechazar la llamada sin ese dato.
+- Si el producto trae "Disponible en:" pero un solo precio (p.ej. colores), el precio es único: menciona las opciones como algo positivo, sin hablar de rangos.
+
 DISPONIBILIDAD EN TIENDAS — REGLA ABSOLUTA:
 - NUNCA digas en qué tienda específica está un producto — no tienes esa información en tiempo real
 - Si el cliente pregunta "¿tienes X?", "¿está disponible?", "¿en qué tienda?", "¿hay unidades?" → responde siempre de forma positiva general: "¡Seguramente sí! En DeCasa manejamos buen stock y lo que no esté en tienda lo fabricamos al mismo precio 🏭" y ofrece conectar con asesor
@@ -490,6 +507,7 @@ const TOOLS = [
       properties: {
         producto: { type: 'string', description: 'Nombre exacto del producto' },
         precio:   { type: 'string', description: 'Precio como texto (ej: "$3.000.000")' },
+        variante: { type: 'string', description: 'Opción elegida por el cliente cuando el producto tiene variantes con precios distintos (ej: "1.60", "6 pts", "piedra sinterizada"). Obligatorio en esos productos: sin ella no se puede saber el precio.' },
         cantidad: { type: 'number', description: 'Cantidad (default 1)' },
       },
       required: ['producto', 'precio'],
@@ -753,8 +771,69 @@ function scoring(p, q, qWords) {
   return score
 }
 
+// Traduce las variantes de un producto a los campos que ve el modelo. La regla clave:
+// si las opciones tienen precios distintos, NO se le entrega un `precio` suelto — se le
+// da el rango y la lista, para que no pueda comprometer un importe que solo vale para
+// una de las medidas. Si todas cuestan igual (color, acabado), el precio es único y las
+// opciones son solo información que enriquece la respuesta.
+function infoPrecioVariantes(p) {
+  const variantes = (p.variantes || []).filter(v => v.etiqueta && v.precio > 0)
+  if (variantes.length === 0) return { precio: Number(p.precio ?? 0) }
+
+  const precios = [...new Set(variantes.map(v => v.precio))]
+  if (precios.length === 1) {
+    return {
+      precio: Number(p.precio ?? 0),
+      opciones: variantes.map(v => v.etiqueta),
+      tipo_opcion: variantes[0].tipo,
+    }
+  }
+
+  return {
+    precio: null,
+    precio_desde: Math.min(...precios),
+    precio_hasta: Math.max(...precios),
+    tipo_variante: variantes[0].tipo,
+    variantes: variantes.map(v => ({ opcion: v.etiqueta, precio: v.precio })),
+    nota_variantes: 'Este producto tiene varias opciones con PRECIOS DISTINTOS. No des un precio único ni menciones solo el más bajo como si fuera el precio: dile el rango (desde X hasta Y), enumera las opciones disponibles y pregúntale cuál necesita. Cuando la elija, dale el precio exacto de ESA opción.',
+  }
+}
+
+// Precio con el que comparar contra el presupuesto del cliente: el más bajo al que
+// puede llevarse el producto.
+function precioMinimo(p) {
+  const variantes = (p.variantes || []).filter(v => v.precio > 0)
+  if (!variantes.length) return parsearPrecio(p.precio)
+  return Math.min(...variantes.map(v => v.precio))
+}
+
+// Busca una variante por lo que escribió el cliente ("1.60", "6 pts", "flor morado").
+// Tolerante con la puntuación porque en la BD conviven "1,40", "1.40" y "160".
+function encontrarVariante(producto, textoVariante) {
+  const variantes = (producto?.variantes || []).filter(v => v.etiqueta && v.precio > 0)
+  if (!variantes.length || !textoVariante) return null
+  const norm = s => normalize(String(s)).replace(/[.,\s]/g, '')
+  const buscado = norm(textoVariante)
+  return variantes.find(v => norm(v.etiqueta) === buscado)
+      ?? variantes.find(v => norm(v.etiqueta).includes(buscado) || buscado.includes(norm(v.etiqueta)))
+      ?? null
+}
+
+// Precio corto para tarjetas de carrusel y confirmaciones: "desde $X" cuando el
+// producto tiene opciones que valen distinto.
+function etiquetaPrecio(p) {
+  const info = infoPrecioVariantes(p)
+  return info.precio === null
+    ? `desde $${info.precio_desde.toLocaleString('es-CO')}`
+    : `$${Number(p.precio ?? 0).toLocaleString('es-CO')}`
+}
+
 function formatProducto(p) {
-  return `*${p.nombre}*\nPrecio: $${Number(p.precio ?? 0).toLocaleString('es-CO')}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}`
+  const info = infoPrecioVariantes(p)
+  const linea = info.precio === null
+    ? `Precio: desde $${info.precio_desde.toLocaleString('es-CO')} hasta $${info.precio_hasta.toLocaleString('es-CO')} (según la opción)\nOpciones: ${info.variantes.map(v => `${v.opcion} → $${v.precio.toLocaleString('es-CO')}`).join(' | ')}\n[No des un precio único: pregúntale cuál opción quiere y dale el precio de esa]`
+    : `Precio: $${Number(p.precio ?? 0).toLocaleString('es-CO')}${info.opciones ? `\nDisponible en: ${info.opciones.join(', ')}` : ''}`
+  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}`
 }
 
 function parsearPrecio(p) {
@@ -777,8 +856,10 @@ async function setCarrito(psid, carrito) {
 // flujo si falla.
 async function recordarMostrados(psid, productos) {
   try {
+    // Con variantes se guarda el precio de entrada: "la de $X" del cliente se resuelve
+    // por el precio más bajo, que es el que se le mostró como "desde".
     await db.setUltimosMostrados(psid, productos.slice(0, 6).map(p => ({
-      nombre: p.nombre, precio: parsearPrecio(p.precio),
+      nombre: p.nombre, precio: precioMinimo(p),
     })))
   } catch (e) { console.warn('[mostrados] no se pudo guardar:', e.message) }
 }
@@ -795,12 +876,14 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'buscar_por_presupuesto': {
-      let base = inventario.filter(p => Number(p.precio ?? 0) <= args.presupuesto_max)
+      // Con variantes cuenta el precio de entrada: si el cliente tiene $3.000.000 y la
+      // cama en 1.40 vale $2.980.000, el producto entra aunque la de 2 metros se pase.
+      let base = inventario.filter(p => precioMinimo(p) > 0 && precioMinimo(p) <= args.presupuesto_max)
       if (args.categoria) {
         const cat = normalize(args.categoria).replace(/\s+/g, '_')
         base = base.filter(p => normalize(p.subcategoria).replace(/\s+/g, '_') === cat)
       }
-      const resultados = base.sort((a, b) => Number(b.precio) - Number(a.precio)).slice(0, 5)
+      const resultados = base.sort((a, b) => precioMinimo(b) - precioMinimo(a)).slice(0, 5)
       if (!resultados.length) return `No encontré productos en ese presupuesto. ¿Quieres ver opciones cercanas a tu rango?`
       await recordarMostrados(psid, resultados)
       return resultados.map(formatProducto).join('\n\n')
@@ -818,9 +901,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         if (resultado.imagen2 && resultado.imagen2 !== resultado.imagen) {
           await ig.sendImageMessage(psid, resultado.imagen2)
         }
-        return `[Foto de ${resultado.nombre} enviada — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')}. Haz seguimiento de venta]`
+        return `[Foto de ${resultado.nombre} enviada — ${etiquetaPrecio(resultado)}. Haz seguimiento de venta]`
       }
-      return `[${resultado.nombre} — $${Number(resultado.precio ?? 0).toLocaleString('es-CO')} — sin foto disponible. Sugiere al cliente visitar el perfil @muebles_decasa]`
+      return `[${resultado.nombre} — ${etiquetaPrecio(resultado)} — sin foto disponible. Sugiere al cliente visitar el perfil @muebles_decasa]`
     }
 
     case 'enviar_carrusel': {
@@ -836,7 +919,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       }
       const elementos = encontrados.map(p => ({
         title:     p.nombre,
-        subtitle:  `$${Number(p.precio ?? 0).toLocaleString('es-CO')}${p.medidas ? ` · ${p.medidas}` : ''}`,
+        subtitle:  `${etiquetaPrecio(p)}${p.medidas ? ` · ${p.medidas}` : ''}`,
         image_url: p.imagen,
         buttons:   [{ type: 'postback', title: 'Me interesa 💬', payload: `INTERESA::${p.nombre}` }],
       }))
@@ -987,21 +1070,41 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'agregar_al_carrito': {
+      // Un producto con variantes de precio no puede entrar al carrito "a secas": el
+      // pedido llegaría al sistema de ventas con un importe que no corresponde a lo que
+      // el cliente quiere. Se exige la opción y el precio sale de la BD, no del modelo.
+      const prodInv = buscarEnInventario(args.producto ?? '', null, 1)[0]
+      const variantesPrecio = (prodInv?.variantes || []).filter(v => v.etiqueta && v.precio > 0)
+      const preciosDistintos = new Set(variantesPrecio.map(v => v.precio)).size > 1
+
+      let etiquetaVariante = null
+      let precioFinal = args.precio
+      if (preciosDistintos) {
+        const elegida = encontrarVariante(prodInv, args.variante)
+        if (!elegida) {
+          const lista = variantesPrecio.map(v => `${v.etiqueta} → $${v.precio.toLocaleString('es-CO')}`).join(' | ')
+          return `[NO agregado al carrito] "${args.producto}" se vende en varias opciones con precios distintos: ${lista}. Pregúntale al cliente cuál quiere (enumerándole las opciones con su precio) y vuelve a llamar agregar_al_carrito con el campo variante. NO le des un precio hasta que elija.`
+        }
+        etiquetaVariante = elegida.etiqueta
+        precioFinal = `$${elegida.precio.toLocaleString('es-CO')}` // el precio manda desde la BD
+      }
+      const nombreCarrito = etiquetaVariante ? `${args.producto} (${etiquetaVariante})` : args.producto
+
       const carrito = await getCarrito(psid)
       if (carrito.length >= 10) return 'Tu carrito está lleno (máximo 10 productos). Confirma la compra o elimina algo primero.'
-      const ya = carrito.find(i => i.producto.toLowerCase() === (args.producto ?? '').toLowerCase())
+      const ya = carrito.find(i => i.producto.toLowerCase() === (nombreCarrito ?? '').toLowerCase())
       if (ya) {
         // Actualizar cantidad si se especificó una diferente
         const nuevaCantidad = args.cantidad ?? ya.cantidad ?? 1
         ya.cantidad = nuevaCantidad
         await setCarrito(psid, carrito)
         const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
-        return `Actualicé *${args.producto}* a ${nuevaCantidad} unidad${nuevaCantidad > 1 ? 'es' : ''} en tu carrito 🛍️\nTotal: *$${total.toLocaleString('es-CO')}*\n\n¿Agregamos algo más o confirmamos el pedido?`
+        return `Actualicé *${nombreCarrito}* a ${nuevaCantidad} unidad${nuevaCantidad > 1 ? 'es' : ''} en tu carrito 🛍️\nTotal: *$${total.toLocaleString('es-CO')}*\n\n¿Agregamos algo más o confirmamos el pedido?`
       }
-      carrito.push({ producto: args.producto, precio: args.precio, cantidad: args.cantidad ?? 1 })
+      carrito.push({ producto: nombreCarrito, precio: precioFinal, cantidad: args.cantidad ?? 1 })
       await setCarrito(psid, carrito)
       const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
-      return `¡Listo! 🛍️ *${args.producto}* agregado al carrito.\nTotal: *$${total.toLocaleString('es-CO')}* (${carrito.length} producto${carrito.length > 1 ? 's' : ''})\n\n¿Agregamos algo más o confirmamos el pedido?`
+      return `¡Listo! 🛍️ *${nombreCarrito}* agregado al carrito por ${precioFinal}.\nTotal: *$${total.toLocaleString('es-CO')}* (${carrito.length} producto${carrito.length > 1 ? 's' : ''})\n\n¿Agregamos algo más o confirmamos el pedido?`
     }
 
     case 'quitar_del_carrito': {
@@ -1734,5 +1837,7 @@ module.exports = {
   extraerPrecios, validarPrecios, setPreciosInventarioParaPruebas,
   comentarioEsConsulta, payloadAIntent, normalize,
   buscarEnInventario,
+  // Variantes de precio (un producto con varias medidas que valen distinto)
+  infoPrecioVariantes, precioMinimo, encontrarVariante, formatProducto, etiquetaPrecio,
   setInventarioParaPruebas: (arr) => { inventario = arr },
 }

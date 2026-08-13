@@ -68,3 +68,91 @@ test('buscarEnInventario: filtra bases por nº de puestos y por forma', () => {
   const copa = agente.buscarEnInventario('mesa comedor en forma de copa', 'bases_comedores', 5).map(p => p.nombre)
   assert.equal(copa[0], 'BASE ABANICA', `esperaba la base redonda (Diametro) primero, dio ${copa[0]}`)
 })
+
+// ── Variantes de precio ───────────────────────────────────────────────────────
+// Un producto puede venderse en varias medidas con precios distintos. Antes el agente
+// cotizaba siempre precio_base: para el COLCHON SOPHIA decía $760.000 cuando la medida
+// de 1.40 vale $960.000, comprometiendo un precio por debajo del real.
+
+const CAMA_MIAMI = {
+  nombre: 'CAMA MIAMI', precio: 2880000, medidas: '1.60 / 1.90', material: 'Flor Morado',
+  subcategoria: 'camas', imagen: 'x.jpg',
+  variantes: [
+    { etiqueta: '1.90', precio: 2480000, tipo: 'Cama Miami medidas', afectaPrecio: true },
+    { etiqueta: '1.60', precio: 2980000, tipo: 'Cama Miami medidas', afectaPrecio: true },
+  ],
+}
+const CAMA_SIMPLE = {
+  nombre: 'CAMA SENCILLA', precio: 1200000, medidas: '1.00 x 1.90', material: 'Pino',
+  subcategoria: 'camas', imagen: 'y.jpg', variantes: [],
+}
+const SILLA_COLORES = {
+  nombre: 'Silla comedor Selene', precio: 780000, medidas: '45x50', material: 'Madera',
+  subcategoria: 'sillas_comedor', imagen: 'z.jpg',
+  variantes: [
+    { etiqueta: 'Natural', precio: 780000, tipo: 'Colores selene', afectaPrecio: true },
+    { etiqueta: 'cafe', precio: 780000, tipo: 'Colores selene', afectaPrecio: true },
+  ],
+}
+
+test('infoPrecioVariantes: con precios distintos no entrega precio único sino rango', () => {
+  const info = agente.infoPrecioVariantes(CAMA_MIAMI)
+  assert.equal(info.precio, null)
+  assert.equal(info.precio_desde, 2480000)
+  assert.equal(info.precio_hasta, 2980000)
+  assert.deepEqual(info.variantes, [
+    { opcion: '1.90', precio: 2480000 },
+    { opcion: '1.60', precio: 2980000 },
+  ])
+  assert.match(info.nota_variantes, /PRECIOS DISTINTOS/)
+})
+
+test('infoPrecioVariantes: sin variantes devuelve el precio tal cual', () => {
+  assert.deepEqual(agente.infoPrecioVariantes(CAMA_SIMPLE), { precio: 1200000 })
+})
+
+test('infoPrecioVariantes: variantes del mismo precio (colores) mantienen precio único', () => {
+  const info = agente.infoPrecioVariantes(SILLA_COLORES)
+  assert.equal(info.precio, 780000)
+  assert.equal(info.precio_desde, undefined)
+  assert.deepEqual(info.opciones, ['Natural', 'cafe'])
+})
+
+test('precioMinimo: usa el precio de entrada para comparar con el presupuesto', () => {
+  assert.equal(agente.precioMinimo(CAMA_MIAMI), 2480000)
+  assert.equal(agente.precioMinimo(CAMA_SIMPLE), 1200000)
+})
+
+test('encontrarVariante: tolera cómo escriba el cliente la medida', () => {
+  assert.equal(agente.encontrarVariante(CAMA_MIAMI, '1.60').precio, 2980000)
+  assert.equal(agente.encontrarVariante(CAMA_MIAMI, '1,60').precio, 2980000)
+  assert.equal(agente.encontrarVariante(CAMA_MIAMI, '160').precio, 2980000)
+  assert.equal(agente.encontrarVariante(CAMA_MIAMI, '2.00'), null)
+  assert.equal(agente.encontrarVariante(CAMA_SIMPLE, '1.90'), null)
+})
+
+test('formatProducto: muestra el rango y prohíbe el precio único', () => {
+  const texto = agente.formatProducto(CAMA_MIAMI)
+  assert.match(texto, /desde \$2\.480\.000 hasta \$2\.980\.000/)
+  assert.match(texto, /1\.90 → \$2\.480\.000/)
+  assert.match(texto, /No des un precio único/)
+})
+
+test('formatProducto: sin variantes mantiene el formato de siempre', () => {
+  const texto = agente.formatProducto(CAMA_SIMPLE)
+  assert.match(texto, /Precio: \$1\.200\.000/)
+  assert.doesNotMatch(texto, /desde/)
+})
+
+test('etiquetaPrecio: "desde" solo cuando las opciones valen distinto', () => {
+  assert.equal(agente.etiquetaPrecio(CAMA_MIAMI), 'desde $2.480.000')
+  assert.equal(agente.etiquetaPrecio(CAMA_SIMPLE), '$1.200.000')
+  assert.equal(agente.etiquetaPrecio(SILLA_COLORES), '$780.000')
+})
+
+test('validarPrecios: el precio de una variante NO se marca como inventado', () => {
+  // 2.980.000 solo existe como precio de la medida 1.60, no como precio_base
+  agente.setPreciosInventarioParaPruebas([2880000, 2480000, 2980000, 1200000])
+  assert.deepEqual(agente.validarPrecios('p', 'La CAMA MIAMI en 1.60 vale $2.980.000', new Set()), [])
+  assert.deepEqual(agente.validarPrecios('p', 'Te la dejo en $2.700.000', new Set()), [2700000])
+})
