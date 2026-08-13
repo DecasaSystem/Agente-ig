@@ -602,6 +602,22 @@ async function registrarComentario(commentId) {
   }
 }
 
+// Últimas citas del cliente, para que la IA pueda responder "¿a qué hora quedó mi
+// visita?" aunque el historial de conversación ya se haya limpiado por inactividad.
+async function getCitasRecientes(psid, limite = 3) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT nombre, dia, hora, ubicacion, razon, estado
+       FROM citas_agentes WHERE telefono = ? ORDER BY created_at DESC LIMIT ?`,
+      [igTel(psid), limite]
+    )
+    return rows
+  } catch (e) {
+    console.warn('[db] no se pudieron leer las citas:', e.message)
+    return []
+  }
+}
+
 // ── Cola de notificaciones pendientes ────────────────────────────────────────
 
 async function encolarNotificacion(psid, tipo, payload, retrasoSegundos = 60) {
@@ -677,6 +693,7 @@ module.exports = {
   marcarTransferido,
   guardarPedido,
   guardarCita,
+  getCitasRecientes,
   registrarMid,
   limpiarMidsAntiguos,
   registrarComentario,

@@ -179,3 +179,29 @@ test('encolar: serializa las tareas del mismo cliente', async () => {
   await Promise.all([p1, p2])
   assert.deepEqual(orden, ['inicio-1', 'fin-1', 'inicio-2', 'fin-2'])
 })
+
+test('consultar_estado: resume carrito, ultimo producto y citas sin tocar db.pool', async () => {
+  // Este test existe porque la primera version usaba db.pool.query directamente, y en
+  // este agente `pool` NO se exporta: habria reventado en produccion al primer uso.
+  const db = require('../db.js')
+  const originales = {
+    getEstado: db.getEstado, getUltimoProducto: db.getUltimoProducto, getCitasRecientes: db.getCitasRecientes,
+  }
+  // El carrito se guarda como texto JSON en estado_usuario, no como array
+  db.getEstado = async () => ({ carrito: JSON.stringify([{ producto: 'CAMA MIAMI (1.60)', precio: '$2.980.000', cantidad: 1 }]) })
+  db.getUltimoProducto = async () => ({ nombre: 'CAMA MIAMI' })
+  db.getCitasRecientes = async () => ([
+    { nombre: 'Ana', dia: 'martes 3', hora: '10:00', ubicacion: 1, razon: null, estado: 'pendiente' },
+  ])
+
+  try {
+    const salida = JSON.parse(await agente.ejecutarTool('psid-test', 'consultar_estado', {}, {}))
+    assert.equal(salida.carrito.items.length, 1)
+    assert.equal(salida.carrito.total, '$2.980.000')
+    assert.equal(salida.ultimo_producto_visto.nombre, 'CAMA MIAMI')
+    assert.equal(salida.citas_agendadas.length, 1)
+    assert.match(salida.citas_agendadas[0].sede, /Bol[ií]var|Sede 1/)
+  } finally {
+    Object.assign(db, originales)
+  }
+})

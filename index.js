@@ -508,6 +508,11 @@ const TOOLS = [
     parameters: { type: 'object', properties: {} },
   },
   {
+    name: 'consultar_estado',
+    description: 'Devuelve el estado del cliente: qué tiene en el carrito, el último producto que vio y sus citas agendadas. Úsalo cuando pregunte por algo que ya pasó ("¿qué había pedido?", "¿a qué hora quedó mi visita?", "¿en qué sede era?") y no lo tengas claro en la conversación.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
     name: 'agregar_al_carrito',
     description: 'Agrega un producto al carrito. SOLO cuando el cliente confirme explícitamente que quiere comprar ese producto.',
     parameters: {
@@ -612,7 +617,9 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   // devuelve en response.usage). Se logean al terminar el turno.
   let tokPrompt = 0, tokCompletion = 0
 
-  for (let round = 0; round < 5; round++) {
+  // 6 rondas, igual que el agente de WhatsApp: con 5 se quedaba corto en turnos que
+  // encadenan búsqueda, foto y carrito.
+  for (let round = 0; round < 6; round++) {
     if (round > 0) await ig.sendTypingOn(psid)
     const response = await openai.chat.completions.create({
       model:       process.env.OPENAI_MODEL ?? 'gpt-4o',
@@ -665,7 +672,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
 
   evento(psid, 'sin_resolver', 'limite de rondas')
   await enviarNotificacionSistema(psid, userInfo, 'La IA no pudo resolver la solicitud tras varios intentos (límite de rondas de herramientas alcanzado). Revisar conversación.', 'asesor').catch(err => console.error('[redes] no se pudo notificar límite de rondas:', err.message))
-  logUsoTokens(psid, tokPrompt, tokCompletion, 5)
+  logUsoTokens(psid, tokPrompt, tokCompletion, 6)
   const avisoRondas = avisoFueraHorario()
   return `Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏${avisoRondas ? `\n\n${avisoRondas}` : ''}`
 }
@@ -1062,6 +1069,28 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       return avisoFueraHorario()
         ? 'Confírmale al cliente que lo estás conectando con un asesor 😊, y AVÍSALE SIEMPRE que en este momento estamos fuera del horario de atención (Lun-Vie 8am-5pm, Sáb 8am-12pm), así que el asesor le responderá apenas abra el próximo horario hábil — para que no se quede esperando. Sé cálida y agradece su paciencia.'
         : 'Confírmale al cliente que lo estás conectando con un asesor que lo atenderá pronto 😊.'
+    }
+
+    case 'consultar_estado': {
+      // Resume lo que ya pasó con este cliente. El historial de conversación se limpia
+      // por inactividad, así que sin esto una pregunta como "¿a qué hora quedó mi
+      // visita?" o "¿qué había pedido?" se quedaba sin respuesta.
+      const items = await getCarrito(psid)
+      const ultimo = await db.getUltimoProducto(psid)
+      const citasRecientes = (await db.getCitasRecientes(psid)).map(c => ({
+        nombre: c.nombre, dia: c.dia, hora: c.hora,
+        sede: SEDE_NOMBRE[c.ubicacion] ?? `Sede ${c.ubicacion}`,
+        motivo: c.razon, estado: c.estado,
+      }))
+
+      const total = items.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
+      return JSON.stringify({
+        carrito: items.length
+          ? { items: items.map(i => ({ producto: i.producto, precio: i.precio, cantidad: i.cantidad || 1 })), total: `$${total.toLocaleString('es-CO')}` }
+          : null,
+        ultimo_producto_visto: ultimo ? { nombre: ultimo.nombre } : null,
+        citas_agendadas: citasRecientes.length ? citasRecientes : null,
+      })
     }
 
     case 'ver_carrito': {
@@ -1845,6 +1874,7 @@ module.exports = {
   extraerPrecios, validarPrecios, setPreciosInventarioParaPruebas,
   comentarioEsConsulta, payloadAIntent, normalize,
   buscarEnInventario,
+  ejecutarTool,
   // Variantes de precio (un producto con varias medidas que valen distinto)
   infoPrecioVariantes, precioMinimo, encontrarVariante, formatProducto, etiquetaPrecio,
   encolar,
