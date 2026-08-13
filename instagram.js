@@ -153,6 +153,23 @@ async function sendPrivateReplyToComment(commentId, texto) {
   }
 }
 
+// Respuesta PÚBLICA a un comentario: queda colgando del comentario original, a la vista
+// de todo el que entre a la publicación. Distinta de sendPrivateReplyToComment, que abre
+// un DM. Se usan las dos a la vez: el DM resuelve la consulta y la respuesta pública
+// deja constancia de que la marca contesta.
+async function replyToComment(commentId, texto) {
+  try {
+    await axios.post(`${BASE}/${commentId}/replies`,
+      null,
+      { params: { message: String(texto).substring(0, 2000), access_token: TOKEN() }, timeout: 10000 }
+    )
+    return true
+  } catch (e) {
+    console.error('[IG] reply to comment error:', e.response?.data?.error ?? e.message)
+    return false
+  }
+}
+
 function splitMessage(texto, maxLen) {
   if (texto.length <= maxLen) return [texto]
   const chunks = []
@@ -188,5 +205,5 @@ async function getMediaDetails(mediaId) {
 module.exports = {
   sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo,
   downloadMediaToBuffer, getMediaDetails,
-  sendQuickReplies, sendCarousel, sendPrivateReplyToComment,
+  sendQuickReplies, sendCarousel, sendPrivateReplyToComment, replyToComment,
 }

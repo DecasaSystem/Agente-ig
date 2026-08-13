@@ -401,7 +401,7 @@ async function getInventario() {
   let rows
   try {
     [rows] = await pool.query(
-      `SELECT nombre, precio_base AS precio, foto_url AS imagen, foto_url_2 AS imagen2, medidas, material, categoria AS subcategoria
+      `SELECT id, nombre, precio_base AS precio, foto_url AS imagen, foto_url_2 AS imagen2, medidas, material, categoria AS subcategoria
        FROM productos WHERE activo = 1 ORDER BY categoria, nombre`
     )
   } catch {
@@ -410,7 +410,80 @@ async function getInventario() {
        FROM productos WHERE activo IS NULL OR activo = 1 ORDER BY subcategoria, nombre`
     )
   }
-  return rows.map(r => ({ ...r, subcategoria: normalizarCategoria(r.subcategoria) }))
+  const variantes = await getVariantesPorProducto()
+  return rows.map(r => ({
+    ...r,
+    subcategoria: normalizarCategoria(r.subcategoria),
+    variantes: variantes.get(r.id) ?? [],
+  }))
+}
+
+// Un mismo producto puede venderse en varias medidas/acabados con PRECIOS DISTINTOS.
+// Sin esto el agente cotizaba siempre el precio_base: para el COLCHON SOPHIA decía
+// $760.000 cuando la medida de 1.40 vale $960.000, comprometiendo un precio por debajo
+// del real, y para la CAMA CHOCOLATINA cotizaba $500.000 de más.
+//
+// Hay dos mecanismos en la base de datos, sin solaparse entre sí:
+//
+//   1. producto_variante_configs — el actual (45 productos). Enlaza producto con un
+//      tipo de variante ("Cama Miami medidas", "Puestos") y sus opciones ("1.60",
+//      "4 pts"). OJO con el nombre de la columna: `precio_adicional` NO es un
+//      incremento sobre el precio base, es el PRECIO ABSOLUTO de esa variante; cuando
+//      vale 0 se usa el precio_base. Así lo calcula el sistema de ventas en
+//      NuevaOrdenView.vue (`precioAdicional > 0 ? precioAdicional : precio_base`), y
+//      por eso hay opciones más baratas que el precio base.
+//
+//   2. producto_variantes — la tabla anterior (solo los 3 colchones para precios), con
+//      la medida y su precio absoluto en `precio_variante`. Esa misma tabla guarda
+//      además variantes de TELA sin precio (marca/color), que aquí se ignoran porque
+//      no cambian cuánto cuesta el producto.
+//
+// `afecta_precio = 0` marca variantes cosméticas (p.ej. color del mantel): son opciones
+// reales que conviene ofrecer, pero todas cuestan lo mismo.
+async function getVariantesPorProducto() {
+  const mapa = new Map()
+  try {
+    const [rows] = await pool.query(`
+      SELECT cfg.producto_id                                   AS producto_id,
+             o.nombre                                          AS etiqueta,
+             CASE WHEN cfg.precio_adicional > 0
+                  THEN cfg.precio_adicional
+                  ELSE p.precio_base END                       AS precio,
+             tv.nombre                                         AS tipo,
+             tv.afecta_precio                                  AS afecta_precio
+      FROM producto_variante_configs cfg
+      JOIN productos p              ON p.id  = cfg.producto_id AND p.activo = 1
+      JOIN tipos_variante tv        ON tv.id = cfg.tipo_variante_id AND tv.activo = 1
+      JOIN tipo_variante_opciones o ON o.id  = cfg.opcion_id   AND o.activo = 1
+
+      UNION ALL
+
+      SELECT v.producto_id, v.medida, v.precio_variante, 'Medidas', 1
+      FROM producto_variantes v
+      JOIN productos p ON p.id = v.producto_id AND p.activo = 1
+      WHERE v.activo = 1
+        AND v.precio_variante IS NOT NULL
+        AND v.medida IS NOT NULL
+    `)
+
+    for (const r of rows) {
+      if (!mapa.has(r.producto_id)) mapa.set(r.producto_id, [])
+      mapa.get(r.producto_id).push({
+        etiqueta: String(r.etiqueta ?? '').trim(),
+        precio:   Number(r.precio ?? 0),
+        tipo:     r.tipo ?? 'Opciones',
+        afectaPrecio: Number(r.afecta_precio ?? 0) === 1,
+      })
+    }
+
+    // De menor a mayor precio: al cliente se le muestra "desde X" y así la lista queda
+    // en el orden en que la va a leer.
+    for (const lista of mapa.values()) lista.sort((a, b) => a.precio - b.precio)
+  } catch (e) {
+    // Si las tablas de variantes no existen (BD antigua), se sigue con precio único.
+    console.warn('[variantes] no se pudieron cargar:', e.message)
+  }
+  return mapa
 }
 
 // ── Pedidos y citas ───────────────────────────────────────────────────────────
@@ -529,6 +602,22 @@ async function registrarComentario(commentId) {
   }
 }
 
+// Últimas citas del cliente, para que la IA pueda responder "¿a qué hora quedó mi
+// visita?" aunque el historial de conversación ya se haya limpiado por inactividad.
+async function getCitasRecientes(psid, limite = 3) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT nombre, dia, hora, ubicacion, razon, estado
+       FROM citas_agentes WHERE telefono = ? ORDER BY created_at DESC LIMIT ?`,
+      [igTel(psid), limite]
+    )
+    return rows
+  } catch (e) {
+    console.warn('[db] no se pudieron leer las citas:', e.message)
+    return []
+  }
+}
+
 // ── Cola de notificaciones pendientes ────────────────────────────────────────
 
 async function encolarNotificacion(psid, tipo, payload, retrasoSegundos = 60) {
@@ -604,6 +693,7 @@ module.exports = {
   marcarTransferido,
   guardarPedido,
   guardarCita,
+  getCitasRecientes,
   registrarMid,
   limpiarMidsAntiguos,
   registrarComentario,
