@@ -160,12 +160,20 @@ const buffers = new Map() // psid -> { textos, adjuntos, esStory, storyUrl, stor
 const colas   = new Map() // psid -> Promise (cadena de ejecución serializada)
 
 // Encadena la tarea después de la última del mismo PSID (mutex por cliente).
+// La cadena que se guarda va siempre "silenciada": si una tarea falla, la siguiente
+// debe correr igual y el rechazo no puede quedar sin manejar — la promesa derivada del
+// .finally() no tenía manejador de error, así que una tarea que rechazara provocaba un
+// unhandledRejection y tumbaba el proceso entero, con él las conversaciones de todos
+// los clientes. Hoy no se dispara porque quien llama envuelve la tarea en un .catch,
+// pero eso deja el fallo a un descuido de distancia.
 function encolar(psid, tarea) {
-  const anterior  = colas.get(psid) ?? Promise.resolve()
-  const siguiente = anterior.then(tarea, tarea) // corre aunque la anterior haya fallado
-  colas.set(psid, siguiente)
-  siguiente.finally(() => { if (colas.get(psid) === siguiente) colas.delete(psid) })
-  return siguiente
+  const anterior = colas.get(psid) ?? Promise.resolve()
+  const cadena   = anterior.then(tarea, tarea).catch(e => {
+    console.error(`[cola] tarea de ${psid} falló:`, e?.message ?? e)
+  })
+  colas.set(psid, cadena)
+  cadena.finally(() => { if (colas.get(psid) === cadena) colas.delete(psid) })
+  return cadena
 }
 
 const correr = (psid, ...args) =>
@@ -1839,5 +1847,6 @@ module.exports = {
   buscarEnInventario,
   // Variantes de precio (un producto con varias medidas que valen distinto)
   infoPrecioVariantes, precioMinimo, encontrarVariante, formatProducto, etiquetaPrecio,
+  encolar,
   setInventarioParaPruebas: (arr) => { inventario = arr },
 }

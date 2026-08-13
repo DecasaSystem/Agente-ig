@@ -156,3 +156,26 @@ test('validarPrecios: el precio de una variante NO se marca como inventado', () 
   assert.deepEqual(agente.validarPrecios('p', 'La CAMA MIAMI en 1.60 vale $2.980.000', new Set()), [])
   assert.deepEqual(agente.validarPrecios('p', 'Te la dejo en $2.700.000', new Set()), [2700000])
 })
+
+test('encolar: una tarea que falla no bloquea la siguiente ni tumba el proceso', async () => {
+  const ejecutadas = []
+  // encolar absorbe el fallo: la promesa devuelta nunca rechaza, así que un error en un
+  // cliente no puede provocar un unhandledRejection que mate el servidor.
+  const p1 = agente.encolar('cliente-A', async () => { ejecutadas.push(1); throw new Error('boom') })
+  const p2 = agente.encolar('cliente-A', async () => { ejecutadas.push(2) })
+  assert.equal(await p1, undefined)
+  await p2
+  assert.deepEqual(ejecutadas, [1, 2])
+})
+
+test('encolar: serializa las tareas del mismo cliente', async () => {
+  const orden = []
+  const tarea = (id, ms) => () => new Promise(res => {
+    orden.push(`inicio-${id}`)
+    setTimeout(() => { orden.push(`fin-${id}`); res() }, ms)
+  })
+  const p1 = agente.encolar('cliente-B', tarea(1, 30))
+  const p2 = agente.encolar('cliente-B', tarea(2, 1))
+  await Promise.all([p1, p2])
+  assert.deepEqual(orden, ['inicio-1', 'fin-1', 'inicio-2', 'fin-2'])
+})
