@@ -318,3 +318,49 @@ test('manejarComentario: responde en público Y por privado', async () => {
     db.registrarComentario = orig.reg
   }
 })
+
+// ── Identificación por caption de publicación/reel ────────────────────────────
+// Caso real: un cliente compartió un reel donde se ve un reloj y el agente le dijo que
+// veía que estaba interesada en una mesa de noche. El caption compartía UNA palabra con
+// "MESA DE NOCHE" y eso bastaba para dárselo al modelo como el producto.
+
+test('identificarProductoPorCaption: reconoce el producto cuando el caption lo nombra', () => {
+  const inv = [
+    { nombre: 'Reloj Decorativo Chronos GLD', precio: 1180000, medidas: '60cm', material: 'Metal', subcategoria: 'decoracion' },
+    { nombre: 'MESA DE NOCHE AMIGABLE',       precio: 880000,  medidas: '50x40', material: 'Madera', subcategoria: 'mesas_noche' },
+    { nombre: 'MESA DE NOCHE BARCELONETA',    precio: 920000,  medidas: '50x40', material: 'Madera', subcategoria: 'mesas_noche' },
+  ]
+  agente.setInventarioParaPruebas(inv)
+
+  assert.equal(agente.identificarProductoPorCaption('Reloj Decorativo Chronos GLD').nombre, 'Reloj Decorativo Chronos GLD')
+  assert.equal(agente.identificarProductoPorCaption('Nuevo reloj decorativo chronos gld ✨').nombre, 'Reloj Decorativo Chronos GLD')
+  assert.equal(agente.identificarProductoPorCaption('Mesa de noche Amigable').nombre, 'MESA DE NOCHE AMIGABLE')
+})
+
+test('identificarProductoPorCaption: no inventa producto por una palabra suelta', () => {
+  const inv = [
+    { nombre: 'Reloj Decorativo Chronos GLD', precio: 1180000, medidas: '60cm', material: 'Metal', subcategoria: 'decoracion' },
+    { nombre: 'MESA DE NOCHE AMIGABLE',       precio: 880000,  medidas: '50x40', material: 'Madera', subcategoria: 'mesas_noche' },
+    { nombre: 'BASE AHORRA ESPACIO',          precio: 1480000, medidas: '1.20',  material: 'Madera', subcategoria: 'bases_comedores' },
+  ]
+  agente.setInventarioParaPruebas(inv)
+
+  // El caso que se vio en producción
+  assert.equal(agente.identificarProductoPorCaption('Buenas noches, descansa como mereces'), null)
+  // Otros captions de marketing que antes colaban un producto cualquiera
+  assert.equal(agente.identificarProductoPorCaption('Dale un toque especial a tu espacio'), null)
+  assert.equal(agente.identificarProductoPorCaption('Detalles que hacen la diferencia'), null)
+  assert.equal(agente.identificarProductoPorCaption(''), null)
+  assert.equal(agente.identificarProductoPorCaption(null), null)
+})
+
+test('identificarProductoPorCaption: gana el producto mejor nombrado, no el primero por score', () => {
+  const inv = [
+    { nombre: 'CAMA MIAMI',             precio: 2880000, medidas: '1.60', material: 'Flor Morado', subcategoria: 'camas' },
+    { nombre: 'CAMA FLOR MORADO LISA',  precio: 2980000, medidas: '1.40', material: 'Flor Morado', subcategoria: 'camas' },
+  ]
+  agente.setInventarioParaPruebas(inv)
+  // "CAMA FLOR MORADO LISA" comparte 3 palabras con el caption y llegaba antes por
+  // score, pero la que está nombrada entera es CAMA MIAMI.
+  assert.equal(agente.identificarProductoPorCaption('Cama Miami en flor morado').nombre, 'CAMA MIAMI')
+})

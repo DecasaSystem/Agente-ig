@@ -843,6 +843,37 @@ function etiquetaPrecio(p) {
     : `$${Number(p.precio ?? 0).toLocaleString('es-CO')}`
 }
 
+// Identifica el producto de una publicación por su texto, pero solo si de verdad lo
+// nombra. buscarEnInventario está pensado para lo que ESCRIBE el cliente ("cama miami")
+// y devuelve resultados con una sola palabra en común, lo cual en un caption es basura:
+// "Buenas noches, descansa como mereces" daba MESA DE NOCHE, y el agente le afirmaba al
+// cliente que estaba interesado en una mesa de noche cuando el reel mostraba un reloj.
+//
+// Aquí se mide al revés: cuánto del NOMBRE del producto aparece en el caption. "Reloj
+// Decorativo Chronos GLD" aparece entero (100%); "MESA DE NOCHE AMIGABLE" en ese caption
+// solo aporta "noche" (25%) y se descarta.
+// Gana el producto MEJOR cubierto, no el primero que pase el listón: con el caption
+// "Cama Miami en flor morado", CAMA FLOR MORADO LISA llegaba antes por score (comparte
+// tres palabras) y se llevaba la identificación por delante de CAMA MIAMI, que está
+// nombrada entera.
+function identificarProductoPorCaption(caption) {
+  const q = normalize(caption ?? '')
+  if (!q) return null
+
+  let mejor = null
+  let mejorCobertura = 0
+  for (const p of buscarEnInventario(caption, null, 5)) {
+    const palabras = tokens(normalize(p.nombre)).filter(w => w.length >= 3)
+    if (!palabras.length) continue
+    const cobertura = palabras.filter(w => q.includes(w)).length / palabras.length
+    if (cobertura > mejorCobertura) {
+      mejorCobertura = cobertura
+      mejor = p
+    }
+  }
+  return mejorCobertura >= 0.6 ? mejor : null
+}
+
 function formatProducto(p) {
   const info = infoPrecioVariantes(p)
   const linea = info.precio === null
@@ -1422,16 +1453,16 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
         } catch (e) { console.warn('[post] no se pudo descargar imagen:', e.message) }
       }
 
-      if (caption) {
-        const resultados = buscarEnInventario(caption, null, 3)
-        if (resultados.length) {
-          const info = resultados.map(formatProducto).join('\n\n')
-          mensajeAI = `[El cliente compartió la publicación: "${caption}". Producto en inventario:\n${info}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
-        } else {
-          mensajeAI = `[El cliente compartió la publicación: "${caption}"]\n${mensajeAI || 'Quiero más información sobre este producto'}`
-        }
+      // Mismo criterio que en los reels: el caption solo cuenta si NOMBRA el producto.
+      // Con una palabra suelta en común se le colaba al modelo un producto equivocado
+      // como si fuera el que el cliente está mirando.
+      const prodCaption = identificarProductoPorCaption(caption)
+      if (prodCaption) {
+        mensajeAI = `[El cliente compartió la publicación: "${caption}". Producto en inventario:\n${formatProducto(prodCaption)}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
+      } else if (imageBase64) {
+        mensajeAI = `[El cliente compartió una publicación de @muebles_decasa${caption ? `: "${caption}"` : ''}. El texto no dice qué producto es, pero tienes la imagen adjunta: identifica el artículo que se ve ahí (puede ser un reloj, un espejo, una lámpara o cualquier objeto decorativo, no solo muebles grandes) y búscalo con buscar_productos. Si no lo reconoces con seguridad, pregúntale al cliente cuál le interesó. NO des por hecho ningún producto.]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
       } else {
-        mensajeAI = `[El cliente compartió una publicación de @muebles_decasa] ${mensajeAI || 'Quiero más información sobre esto'}`
+        mensajeAI = `[El cliente compartió una publicación de @muebles_decasa${caption ? `: "${caption}"` : ''}, pero no pudimos ver la imagen ni identificar el producto. NO adivines: pregúntale qué artículo le llamó la atención o pídele una foto.]\n${mensajeAI || 'Quiero más información sobre esto'}`
       }
     }
 
@@ -1448,20 +1479,41 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
       } catch { /* continuar sin imagen */ }
     }
 
-    // Video/reel compartido — leer caption para identificar el producto
+    // Video/reel compartido. El caption casi nunca nombra el producto, así que lo que
+    // de verdad identifica el mueble es la imagen: se intenta bajar el fotograma de
+    // portada del reel para que el modelo lo VEA, igual que se hace con las historias.
     const mediaAdj = adjuntos.find(a => ['video', 'reel', 'ig_reel'].includes(a.type))
     if (mediaAdj) {
       const captionReel = mediaAdj.payload?.title ?? mediaAdj.payload?.caption ?? ''
-      if (captionReel) {
-        const resultados = buscarEnInventario(captionReel, null, 3)
-        if (resultados.length) {
-          const info = resultados.map(formatProducto).join('\n\n')
-          mensajeAI = `[El cliente compartió un reel de @muebles_decasa: "${captionReel}". Producto en inventario:\n${info}]\n${mensajeAI || '¿Cuánto vale?'}`
-        } else {
-          mensajeAI = `[El cliente compartió un reel de @muebles_decasa: "${captionReel}"]\n${mensajeAI || '¿Cuánto vale o cómo consigo este mueble?'}`
+
+      if (!imageBase64) {
+        const idReel = mediaAdj.payload?.reel_video_id ?? mediaAdj.payload?.media_id ?? mediaAdj.payload?.id
+        if (idReel) {
+          try {
+            const det = await ig.getMediaDetails(idReel)
+            const urlPortada = det?.thumbnail_url ?? det?.media_url
+            if (urlPortada) {
+              const { buffer, contentType } = await ig.downloadMediaToBuffer(urlPortada)
+              if (contentType?.startsWith('image/')) {
+                imageBase64 = buffer.toString('base64')
+                imageMimeType = contentType
+                console.log('[reel] portada descargada para visión')
+              }
+            }
+          } catch (e) { console.warn('[reel] no se pudo obtener la portada:', e.message) }
         }
-      } else if (!mensajeAI.trim()) {
-        mensajeAI = '[El cliente compartió un video/reel de @muebles_decasa] Quiero más información'
+      }
+
+      // El caption solo vale si NOMBRA el producto. Antes bastaba una palabra suelta en
+      // común, y un reel de un reloj con caption "buenas noches..." hacía que el agente
+      // le afirmara al cliente que quería una MESA DE NOCHE.
+      const prodCaption = identificarProductoPorCaption(captionReel)
+      if (prodCaption) {
+        mensajeAI = `[El cliente compartió un reel de @muebles_decasa: "${captionReel}". Producto en inventario:\n${formatProducto(prodCaption)}]\n${mensajeAI || '¿Cuánto vale?'}`
+      } else if (imageBase64) {
+        mensajeAI = `[El cliente compartió un reel de @muebles_decasa${captionReel ? ` con el texto: "${captionReel}"` : ''}. NO sabemos qué producto es: el texto no lo nombra. Se te adjunta el fotograma de portada del reel — identifica el mueble que se ve AHÍ (mira bien: puede ser un reloj, un espejo, una lámpara o cualquier objeto decorativo, no solo muebles grandes) y búscalo con buscar_productos. Si no logras identificarlo con seguridad, pregúntale al cliente qué producto del video le interesó. NO des por hecho ningún producto.]\n${mensajeAI || '¿Cuánto vale?'}`
+      } else {
+        mensajeAI = `[El cliente compartió un reel de @muebles_decasa${captionReel ? ` con el texto: "${captionReel}"` : ''}, pero NO pudimos ver el video ni identificar el producto. NO adivines ni asumas de qué mueble se trata: pregúntale amablemente qué producto del video le llamó la atención, o pídele que te mande una foto o captura.]\n${mensajeAI}`
       }
     }
 
@@ -1986,6 +2038,7 @@ module.exports = {
   ejecutarTool,
   clasificarComentario, respuestaPublicaComentario, comentarioEsHostil, mensajePrivadoCatalogo,
   manejarComentario,
+  identificarProductoPorCaption,
   // Variantes de precio (un producto con varias medidas que valen distinto)
   infoPrecioVariantes, precioMinimo, encontrarVariante, formatProducto, etiquetaPrecio,
   encolar,
