@@ -364,3 +364,29 @@ test('identificarProductoPorCaption: gana el producto mejor nombrado, no el prim
   // score, pero la que está nombrada entera es CAMA MIAMI.
   assert.equal(agente.identificarProductoPorCaption('Cama Miami en flor morado').nombre, 'CAMA MIAMI')
 })
+
+// ── Producto exacto para acciones (foto, carrusel, carrito) ───────────────────
+// buscarEnInventario devuelve resultados aproximados a propósito, para sugerir. Pero en
+// una acción que el cliente VE, un match flojo es una foto equivocada: pedir "nevera"
+// le enviaba la foto de una LAMPARA DE MESA NEGRA.
+
+test('buscarProductoExacto: rechaza lo que no está en el catálogo', () => {
+  agente.setInventarioParaPruebas([
+    { nombre: 'LAMPARA DE MESA NEGRA', precio: 380000, medidas: '40cm', material: 'Metal',  subcategoria: 'decoracion' },
+    { nombre: 'SILLA AUX PERLA LEATHER', precio: 980000, medidas: '80x60', material: 'Cuero', subcategoria: 'sillas_auxiliares' },
+    { nombre: 'SOFA CAMA ROMA', precio: 3000000, medidas: '1.80', material: 'Tela', subcategoria: 'sofas_camas' },
+  ])
+  for (const t of ['nevera', 'tapete persa', 'televisor', 'cortinas']) {
+    assert.equal(agente.buscarProductoExacto(t), null, `"${t}" no debería resolverse a ningún producto`)
+  }
+})
+
+test('buscarProductoExacto: acepta el nombre real y tolera nombres pegados', () => {
+  agente.setInventarioParaPruebas([
+    { nombre: 'SOFA CAMA ROMA', precio: 3000000, medidas: '1.80', material: 'Tela', subcategoria: 'sofas_camas' },
+    { nombre: 'LAMPARA DE PIE', precio: 450000, medidas: '1.50', material: 'Metal', subcategoria: 'decoracion' },
+  ])
+  assert.equal(agente.buscarProductoExacto('SOFA CAMA ROMA').nombre, 'SOFA CAMA ROMA')
+  assert.equal(agente.buscarProductoExacto('sofacama roma').nombre, 'SOFA CAMA ROMA')
+  assert.equal(agente.buscarProductoExacto('LAMPARA DE PIE').nombre, 'LAMPARA DE PIE')
+})

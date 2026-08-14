@@ -874,6 +874,40 @@ function identificarProductoPorCaption(caption) {
   return mejorCobertura >= 0.6 ? mejor : null
 }
 
+// Para ACCIONES sobre un producto concreto (mandar su foto, meterlo al carrito) no vale
+// el "primer resultado" de la búsqueda: esa lista es aproximada a propósito, para poder
+// sugerir. Aquí hace falta certeza, porque el cliente ve el resultado.
+//
+// Sin esto, enviar_foto("nevera") le mandaba al cliente la foto de una LAMPARA DE MESA
+// NEGRA (score 12, coincidencia difusa) y "tapete persa" le mandaba una SILLA AUX PERLA.
+// Se exige que lo pedido esté realmente en el nombre del producto.
+function buscarProductoExacto(consulta) {
+  const palabras = tokens(normalize(consulta ?? '')).filter(w => w.length >= 3)
+  if (!palabras.length) return null
+  const candidatos = buscarEnInventario(consulta, null, 5)
+  if (!candidatos.length) return null
+
+  let mejor = null
+  let mejorCobertura = 0
+  for (const p of candidatos) {
+    const nombre         = normalize(p.nombre)
+    const nombreWords    = tokens(nombre)
+    const nombreCompacto = nombreWords.join('')
+    // Se mantiene la tolerancia a nombres pegados ("sofacama" encuentra "SOFA CAMA"),
+    // pero NO la difusa: "nevera" está a dos letras de "negra" y colaba una LAMPARA DE
+    // MESA NEGRA. Para una acción que el cliente ve, es mejor rechazar y preguntar. Las
+    // erratas de quien escribe las sigue absorbiendo buscar_productos, que es donde el
+    // resultado aproximado sí tiene sentido.
+    const coincide = w => nombre.includes(w) || nombreCompacto.includes(w)
+    const cobertura = palabras.filter(coincide).length / palabras.length
+    if (cobertura > mejorCobertura) {
+      mejorCobertura = cobertura
+      mejor = p
+    }
+  }
+  return mejorCobertura >= 0.6 ? mejor : null
+}
+
 function formatProducto(p) {
   const info = infoPrecioVariantes(p)
   const linea = info.precio === null
@@ -936,8 +970,16 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'enviar_foto': {
-      const resultado = buscarEnInventario(args.nombre_producto)[0]
-      if (!resultado) return `No encontré ese producto. ¿Puedes darme más detalles?`
+      const resultado = buscarProductoExacto(args.nombre_producto)
+      if (!resultado) {
+        // Antes se mandaba el primer resultado por parecido, así que pedir "nevera"
+        // le enviaba al cliente la foto de una lámpara. Mejor admitir que no está y
+        // ofrecer lo más cercano para que el modelo pregunte.
+        const cercanos = buscarEnInventario(args.nombre_producto, null, 3).map(p => p.nombre)
+        return cercanos.length
+          ? `No tenemos "${args.nombre_producto}" en el catálogo. NO le mandes otra foto como si fuera ese producto. Lo más parecido que hay es: ${cercanos.join(', ')}. Pregúntale al cliente si alguno le sirve.`
+          : `No tenemos "${args.nombre_producto}" en el catálogo. Díselo con amabilidad y pregúntale qué tipo de mueble busca.`
+      }
       await db.setUltimoProducto(psid, { nombre: resultado.nombre, imagen: resultado.imagen ?? null, ts: Date.now() })
       await recordarMostrados(psid, [resultado])
       evento(psid, 'producto_visto', resultado.nombre)
@@ -956,8 +998,10 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // Muestra 2-10 productos como tarjetas con foto, precio y botón. Es el reemplazo
       // "nativo" de listar productos en texto + varias fotos sueltas.
       const nombres = Array.isArray(args.productos) ? args.productos.slice(0, 10) : []
+      // Solo productos identificados con certeza: una tarjeta con la foto de otro
+      // producto es peor que una tarjeta de menos.
       const encontrados = nombres
-        .map(n => buscarEnInventario(n)[0])
+        .map(n => buscarProductoExacto(n))
         .filter(p => p && p.imagen)
       if (encontrados.length < 2) {
         // Con menos de 2 tarjetas no vale la pena un carrusel: que el modelo use enviar_foto.
@@ -1141,7 +1185,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // Un producto con variantes de precio no puede entrar al carrito "a secas": el
       // pedido llegaría al sistema de ventas con un importe que no corresponde a lo que
       // el cliente quiere. Se exige la opción y el precio sale de la BD, no del modelo.
-      const prodInv = buscarEnInventario(args.producto ?? '', null, 1)[0]
+      const prodInv = buscarProductoExacto(args.producto ?? '')
       const variantesPrecio = (prodInv?.variantes || []).filter(v => v.etiqueta && v.precio > 0)
       const preciosDistintos = new Set(variantesPrecio.map(v => v.precio)).size > 1
 
@@ -2038,7 +2082,7 @@ module.exports = {
   ejecutarTool,
   clasificarComentario, respuestaPublicaComentario, comentarioEsHostil, mensajePrivadoCatalogo,
   manejarComentario,
-  identificarProductoPorCaption,
+  identificarProductoPorCaption, buscarProductoExacto,
   // Variantes de precio (un producto con varias medidas que valen distinto)
   infoPrecioVariantes, precioMinimo, encontrarVariante, formatProducto, etiquetaPrecio,
   encolar,
