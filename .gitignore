@@ -1,2 +1,10 @@
 node_modules/
 .env
+*.log
+.DS_Store
+
+# Volcados de base de datos: contienen el host real y datos personales de clientes.
+*.sql
+
+# Configuración de un negocio concreto, si se decide no versionarla
+negocio-*.json

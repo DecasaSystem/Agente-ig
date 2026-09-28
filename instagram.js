@@ -111,7 +111,13 @@ async function sendQuickReplies(psid, texto, opciones) {
     payload:      String(o.payload).substring(0, 1000),
   }))
   if (!quick_replies.length) return sendTextMessage(psid, texto)
-  return _send(psid, { text: String(texto).substring(0, 980), quick_replies })
+  // Degradación elegante real: si el envío con botones falla (payload rechazado, versión
+  // de API, permisos), se manda el mismo texto sin botones. Antes se devolvía false y el
+  // cliente se quedaba sin saludo — el comentario prometía el fallback, pero solo aplicaba
+  // cuando no había opciones que mandar.
+  if (await _send(psid, { text: String(texto).substring(0, 980), quick_replies })) return true
+  console.warn('[IG] quick replies rechazadas, se envía como texto plano')
+  return sendTextMessage(psid, texto)
 }
 
 // Carrusel de tarjetas (generic template). elementos = [{ title, subtitle, image_url,

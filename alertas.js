@@ -20,7 +20,9 @@ function alertar(titulo, detalle) {
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) return // sin credenciales, queda solo en los logs
 
-  const texto = `🚨 <b>${titulo} — Elena Instagram</b>\n<code>${String(detalle).substring(0, 400)}</code>`
+  let etiqueta = 'agente Instagram'
+  try { const n = require('./negocio'); etiqueta = `${n.nombreAsesora} Instagram` } catch { /* sin config aún */ }
+  const texto = `🚨 <b>${titulo} — ${etiqueta}</b>\n<code>${String(detalle).substring(0, 400)}</code>`
   fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },

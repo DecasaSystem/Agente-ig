@@ -1,0 +1,181 @@
+{
+  "_archivoCompartido": "Fuente en core/ de la raíz. Edítalo ahí y corre npm run sync.",
+  "_comentario": "Configuración del negocio que atiende el agente. TODO lo que cambia de un cliente a otro vive aquí: nombre, sedes, horario, políticas, categorías y textos. Para desplegar el agente para otro negocio se copia este archivo y se edita — no se toca el código. La ruta se puede cambiar con NEGOCIO_CONFIG.",
+  "asesora": {
+    "nombre": "Elena",
+    "rol": "asesora de ventas"
+  },
+  "empresa": {
+    "nombre": "DeCasa",
+    "descripcion": "tienda de muebles de alta calidad",
+    "pais": "Colombia",
+    "moneda": "COP",
+    "localeMoneda": "es-CO",
+    "zonaHoraria": "America/Bogota",
+    "especialidad": "Muebles de madera Flor Morado y otros materiales (tapizados, metal, vidrio, cedro, pino, roble)",
+    "notaMateriales": "NO todos los productos son de Flor Morado. Antes de mencionar el material de un producto, revisa el campo \"material\" real de ese producto — nunca asumas ni inventes que es Flor Morado si no lo dice explícitamente",
+    "materialEstrella": {
+      "nombre": "Flor Morado",
+      "argumento": "la madera Flor Morado no se astilla ni decolora"
+    },
+    "instagram": "@muebles_decasa"
+  },
+  "horario": {
+    "semana": {
+      "abre": 8,
+      "cierra": 17,
+      "ultimaCita": 16
+    },
+    "sabado": {
+      "abre": 8,
+      "cierra": 12,
+      "ultimaCita": 11
+    },
+    "domingoCerrado": true,
+    "texto": "Lunes-Viernes 8am-5pm | Sábado 8am-12pm",
+    "textoPublico": "🕐 Lunes a viernes 8am-5pm y sábados 8am-12pm (domingos cerrado)",
+    "margenCierreTransferenciaMin": 20
+  },
+  "sedes": [
+    {
+      "id": 1,
+      "tiendaId": 1,
+      "direccion": "Avenida Bolívar # 16 N 26, Armenia, Quindío",
+      "corta": "Av. Bolívar # 16 N 26, Armenia",
+      "nombre": "Decasa Bolívar — Av. Bolívar # 16 N 26, Armenia",
+      "ciudad": "Armenia"
+    },
+    {
+      "id": 2,
+      "tiendaId": 2,
+      "direccion": "Km 2 vía El Edén, Armenia, Quindío",
+      "corta": "Km 2 vía El Edén, Armenia",
+      "nombre": "Decasa Vía El Edén — Km 2 vía El Edén, Armenia",
+      "ciudad": "Armenia"
+    },
+    {
+      "id": 3,
+      "tiendaId": 3,
+      "direccion": "Km 1 vía Jardines, Armenia, Quindío",
+      "corta": "Km 1 vía Jardines, Armenia",
+      "nombre": "Decasa Vía Jardines — Km 1 vía Jardines, Armenia",
+      "ciudad": "Armenia"
+    },
+    {
+      "id": 4,
+      "tiendaId": 4,
+      "direccion": "C.C. Unicentro, Pereira, Risaralda",
+      "corta": "C.C. Unicentro, Pereira",
+      "nombre": "Decasa Unicentro — C.C. Unicentro, Pereira",
+      "ciudad": "Pereira"
+    },
+    {
+      "id": 5,
+      "tiendaId": 5,
+      "direccion": "Cra. 14 #11-93, Pereira, Risaralda",
+      "corta": "Cra. 14 #11-93, Pereira",
+      "nombre": "Decasa Circunvalar — Cra. 14 #11-93, Pereira",
+      "ciudad": "Pereira"
+    }
+  ],
+  "sedesPublico": "📍 Armenia: Av. Bolívar #16N-26 · Km 2 vía El Edén · Km 1 vía Jardines\n📍 Pereira: C.C. Unicentro · Cra. 14 #11-93",
+  "categorias": {
+    "camas": "Camas",
+    "bases_comedores": "Comedores",
+    "sillas_comedor": "Sillas de Comedor",
+    "sillas_auxiliares": "Sillas Auxiliares",
+    "sillas_barra": "Sillas de Barra",
+    "mesas_centro": "Mesas de Centro",
+    "mesas_auxiliares": "Mesas Auxiliares",
+    "mesas_noche": "Mesas de Noche",
+    "mesas_tv": "Mesas de TV",
+    "sofas": "Sofás",
+    "sofas_modulares": "Sofás Modulares",
+    "sofas_camas": "Sofás Cama",
+    "cajoneros_bifes": "Cajoneros",
+    "escritorios": "Escritorios",
+    "colchones": "Colchones"
+  },
+  "mapaCategoriasBD": {
+    "comedores": "bases_comedores",
+    "mesas_aux": "mesas_auxiliares",
+    "sillas_aux": "sillas_auxiliares",
+    "cajoneros": "cajoneros_bifes",
+    "sofa_camas": "sofas_camas"
+  },
+  "terminosAmbiguos": [
+    {
+      "termino": "sillas",
+      "pregunta": "¿Buscas sillas de comedor, sillas auxiliares (sala/decoración) o sillas de barra?"
+    },
+    {
+      "termino": "mesas",
+      "pregunta": "¿Buscas mesa de centro, mesa auxiliar, mesa de noche o mesa para TV?"
+    },
+    {
+      "termino": "sofá/sofas",
+      "pregunta": "¿Buscas sofá tradicional, sofá modular o sofá cama?"
+    },
+    {
+      "termino": "comedor / juego de comedor / conjunto comedor",
+      "pregunta": "¡Ojo importante! 😊 En DeCasa la base (mesa) y las sillas se venden por separado. ¿Buscas la base, las sillas, o te muestro ambas para que armes tu juego completo?"
+    }
+  ],
+  "pagos": {
+    "formas": "efectivo, transferencia bancaria, tarjeta de crédito/débito y ADDI (crédito)",
+    "credito": {
+      "nombre": "ADDI",
+      "esElUnico": true
+    },
+    "descuentos": {
+      "aplicanCon": "pago en efectivo o transferencia bancaria",
+      "noAplicanCon": "tarjeta de crédito ni con ADDI",
+      "valorLoConfirmaAsesor": true
+    },
+    "promocionVigente": null
+  },
+  "envios": {
+    "haceDomicilios": true,
+    "zonasGratis": [
+      "Quindío",
+      "Risaralda (Pereira)"
+    ],
+    "notaFueraDeZona": "Para destinos fuera del Quindío o Risaralda hay un costo adicional de transportadora",
+    "argumento": "te lo llevamos a tu casa 🚚, no tienes que desplazarte"
+  },
+  "servicios": {
+    "fabricacionAMedida": true,
+    "restauraciones": true,
+    "notaVentaPorUnidad": "Sillas se venden por UNIDAD, separadas de las bases de comedor"
+  },
+  "disponibilidad": {
+    "ocultarStockPorTienda": true,
+    "respuestaStock": "¡Seguramente sí! 😊 En DeCasa manejamos buen stock y lo que no tengamos en tienda lo fabricamos al mismo precio desde nuestro taller. ¿Quieres que te comunique con un asesor para confirmar disponibilidad y coordinar?"
+  },
+  "estilo": {
+    "maxPalabras": 150,
+    "emojis": "moderados (1-2 por respuesta)",
+    "personaje": "una vendedora cálida, entusiasta y persuasiva — como una amiga experta en decoración que quiere ayudarte a tomar la mejor decisión. No eres un catálogo de datos",
+    "ejemploBueno": "¡El Sofacama Roma es uno de nuestros favoritos! 😍 $3.000.000 — tela antifluido que resiste derrames y manchas (ideal si tienes mascotas o niños), y abre fácil como cama de 1.80 para cuando llegan visitas. Las patas en Flor Morado le dan ese toque elegante que encaja con casi cualquier sala.\n¿La tienes pensada para sala principal o cuarto de huéspedes? Así te cuento cuál acabado te queda mejor 🙌",
+    "ejemploMalo": "El Sofacama Roma cuesta $3.000.000, mide 1.80x0.90, tela antifluido, patas Flor Morado. ¿Deseas agendar visita?",
+    "complementos": "sofá → mesa de centro; cama → colchón o mesa de noche; base de comedor → sillas (aclarando que se venden por separado); sillas → base de comedor"
+  },
+  "saludos": {
+    "whatsapp": "¡Hola! 👋 Soy Elena, tu asesora de DeCasa.\n\n🏠 Especialistas en muebles de madera Flor Morado (más de 200 productos)\n📍 Tiendas en Armenia y Pereira\n\n📦 Categorías: Sillas, Bases de Comedor, Camas, Mesas, Sofás, Colchones\n🕐 Horario: L-V 8am-5pm | Sábado 8am-12pm\n\n📸 ¿Nos compartes una foto o captura de lo que buscas? Si alcanzas a ver el nombre del producto, cuéntanoslo también así te ayudamos más rápido\n\n💬 ¿Qué mueble estás buscando hoy? 😊",
+    "instagram": "¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️ Si nos compartes una foto o captura, cuéntanos también el nombre del producto si lo alcanzas a ver 📸"
+  },
+  "contactos": {
+    "_nota": "Datos sensibles: se pueden sobrescribir con las variables de entorno COMPRAS_WHATSAPP y CONTACTO_PRIVACIDAD_EMAIL para no tenerlos en el repositorio.",
+    "comprasWhatsapp": null,
+    "emailPrivacidad": null
+  },
+  "operacion": {
+    "ventanaConversacionMinutos": 45,
+    "timeoutCarritoHoras": 72,
+    "retencionHistorialDias": 90,
+    "timeoutTransferidoMinutos": 360,
+    "maxItemsCarrito": 10,
+    "_minutosSilencioAsesor": "Cuando se detecta que un asesor humano está escribiendo (Instagram), la IA se calla. Vuelve a atender si el asesor lleva estos minutos sin escribir y el cliente vuelve a preguntar. Si el asesor tomó el chat desde el panel, no hay tiempo límite: manda el botón Terminar.",
+    "minutosSilencioAsesor": 60
+  }
+}

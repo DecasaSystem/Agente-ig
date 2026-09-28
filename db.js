@@ -1,6 +1,7 @@
 'use strict'
 require('dotenv').config()
 const mysql = require('mysql2/promise')
+const negocio = require('./negocio')
 
 const pool = mysql.createPool({
   host:               process.env.DB_HOST,
@@ -64,6 +65,9 @@ async function runMigrations() {
     // La tabla es compartida con el agente de WhatsApp; si ya existía sin esta columna,
     // añadirla (para recordar los últimos productos mostrados y resolver "esa/la 2ª").
     try { await pool.query('ALTER TABLE estado_usuario ADD COLUMN ultimos_mostrados JSON') } catch { /* ya existe */ }
+    // Marca de "un asesor humano está escribiendo ahora mismo", detectado por los ecos de
+    // Instagram sin pasar por el panel (ver marcarAsesorHumano).
+    try { await pool.query('ALTER TABLE estado_usuario ADD COLUMN asesor_humano JSON') } catch { /* ya existe */ }
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ig_conversaciones (
@@ -125,6 +129,8 @@ async function runMigrations() {
     // tampoco cabe en el dia VARCHAR(20) original.
     try { await pool.query('ALTER TABLE citas_agentes MODIFY telefono VARCHAR(50) NOT NULL') } catch { /* ya está */ }
     try { await pool.query('ALTER TABLE citas_agentes MODIFY dia VARCHAR(60)') } catch { /* ya está */ }
+    // `fecha` DATE: versión estructurada de `dia`, para ordenar y detectar duplicados.
+    try { await pool.query('ALTER TABLE citas_agentes ADD COLUMN fecha DATE NULL AFTER dia, ADD INDEX idx_tel_fecha (telefono, fecha)') } catch { /* ya está */ }
 
     // Deduplicación durable de eventos de Meta. Antes vivía solo en un Set en memoria:
     // tras cada redeploy de Render (frecuentes) un reintento de Meta podía re-procesar
@@ -206,6 +212,21 @@ async function actualizarInteraccion(psid) {
   )
 }
 
+// Minutos desde el último mensaje del cliente. Sirve para avisarle al modelo de que
+// vuelve tras un rato y debe retomar en vez de seguir como si nada.
+async function minutosDesdeUltimaInteraccion(psid) {
+  try {
+    const [rows] = await pool.query(
+      'SELECT TIMESTAMPDIFF(MINUTE, last_interaction, NOW()) AS min FROM clientes_wa WHERE telefono = ?',
+      [igTel(psid)]
+    )
+    const min = rows[0]?.min
+    return Number.isFinite(min) ? min : null
+  } catch {
+    return null
+  }
+}
+
 // ── Estado del usuario ────────────────────────────────────────────────────────
 
 async function getEstado(psid) {
@@ -281,13 +302,66 @@ async function limpiarEstado(psid) {
   await pool.query('DELETE FROM estado_usuario WHERE usuario_id = ?', [clienteId])
 }
 
-// true mientras el cliente sigue "transferido a asesor" y dentro de la ventana de
-// inactividad (la IA no debe intervenir). Si ya pasó el tiempo sin actividad, libera
-// el estado automáticamente y devuelve false para que la IA vuelva a atenderlo.
-// Es una red de seguridad para cuando el asesor olvida dar "Terminar" en el panel de
-// Redes (que es el que normalmente libera este flag, ver RedesController en
-// decasa-api) — 45 min sería demasiado corto y podría reactivar la IA mientras el
-// asesor sigue trabajando el caso sin que el cliente le haya vuelto a escribir.
+// true si un asesor tiene este chat TOMADO desde el panel de Redes: hay una tarjeta en
+// estado 'tomada' en conversaciones_wa (tabla del sistema de ventas; los bots y
+// decasa-api comparten la misma base de datos, ver RedesController::silenciarBot).
+// Si la tabla no existe (BD de desarrollo) se asume que no y el bot sigue como antes.
+async function tomadaPorAsesor(psid) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT 1 FROM conversaciones_wa WHERE telefono = ? AND estado = 'tomada' LIMIT 1`,
+      [igTel(psid)]
+    )
+    return rows.length > 0
+  } catch (e) {
+    console.warn('[db] no se pudo consultar conversaciones_wa:', e.message)
+    return false
+  }
+}
+
+// true si este cliente ya tiene una solicitud de asesor sin atender en el panel (tarjeta
+// 'pendiente' de tipo asesor/personalización de los últimos 3 días — el margen cubre un
+// fin de semana). Sirve para no crear una tarjeta nueva cada vez que el cliente vuelve a
+// pedir asesor fuera de horario mientras sigue hablando con la IA.
+async function solicitudAsesorPendiente(psid) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT 1 FROM conversaciones_wa
+       WHERE telefono = ? AND estado = 'pendiente' AND tipo IN ('asesor', 'personalizacion')
+         AND created_at > NOW() - INTERVAL 3 DAY
+       LIMIT 1`,
+      [igTel(psid)]
+    )
+    return rows.length > 0
+  } catch (e) {
+    console.warn('[db] no se pudo consultar conversaciones_wa:', e.message)
+    return false
+  }
+}
+
+// true si un asesor humano está atendiendo el chat AHORA MISMO: transferido y con la
+// tarjeta tomada en el panel. Se consulta justo antes de que la IA envíe algo, porque
+// el asesor puede pulsar "Tomar" mientras la IA todavía está generando la respuesta.
+async function asesorAtendiendo(psid) {
+  const estado = await getEstado(psid)
+  if (!estado?.transferido) return false
+  return tomadaPorAsesor(psid)
+}
+
+// true mientras el cliente sigue "transferido a asesor" (la IA no debe intervenir).
+//
+// Hay dos situaciones distintas:
+// - El asesor TOMÓ el chat en el panel de Redes: la IA se queda callada hasta que él
+//   pulse "Terminar", sin ningún timeout. Antes se liberaba sola tras 6 h sin mensajes
+//   del cliente — medidas desde el ÚLTIMO mensaje del cliente, que "Tomar" no toca —
+//   así que bastaba con tomar una solicitud de la noche anterior para que, al primer
+//   mensaje del cliente, la IA se soltara y se metiera en la conversación del asesor.
+// - Solo se pidió asesor (la IA se silenció con solicitar_asesor) pero nadie ha tomado
+//   la tarjeta: se mantiene la red de seguridad de 6 h de inactividad del cliente, para
+//   que no se quede hablando solo si nadie lo atiende.
+// - Se DETECTÓ que un asesor humano está escribiendo (ve marcarAsesorHumano): la IA se
+//   calla en el acto, sin que nadie toque el panel. Vuelve a atender cuando el asesor
+//   lleva `minutosSilencioAsesor` sin escribir — si sigue activo, la IA no se mete.
 async function debeEsperarAsesor(psid, timeoutMinutos = 360) {
   const [rows] = await pool.query(
     `SELECT eu.transferido, TIMESTAMPDIFF(MINUTE, c.last_interaction, NOW()) AS minutos_inactivo
@@ -297,6 +371,20 @@ async function debeEsperarAsesor(psid, timeoutMinutos = 360) {
   )
   const row = rows[0]
   if (!row?.transferido) return false
+  if (await tomadaPorAsesor(psid)) return true
+
+  // Silenciada por detección automática: el reloj corre desde el ÚLTIMO mensaje del
+  // asesor, no desde el del cliente. Mientras el asesor siga contestando, la IA calla
+  // aunque el cliente escriba cada minuto.
+  const humano = await getAsesorHumano(psid)
+  if (humano?.ultimoMensajeAt) {
+    const minutosDesdeAsesor = (Date.now() - Number(humano.ultimoMensajeAt)) / 60000
+    if (minutosDesdeAsesor < negocio.minutosSilencioAsesor) return true
+    await liberarAsesorHumano(psid)
+    console.log(`[asesor-humano] ${psid}: el asesor lleva ${Math.round(minutosDesdeAsesor)} min sin escribir — la IA retoma`)
+    return false
+  }
+
   if (row.minutos_inactivo >= timeoutMinutos) {
     await setEstado(psid, { transferido: false })
     return false
@@ -309,6 +397,37 @@ async function debeEsperarAsesor(psid, timeoutMinutos = 360) {
 // Tomar/Terminar (ver RedesController::silenciarBot en decasa-api).
 async function marcarTransferido(psid, transferido = true) {
   await setEstado(psid, { transferido })
+}
+
+// ── Asesor humano detectado automáticamente ───────────────────────────────────
+
+// Cuando llega un eco de un mensaje que la IA no envió, lo escribió una persona desde la
+// cuenta de Instagram del negocio. Se silencia a la IA en el acto (sin esperar a que
+// nadie pulse "Tomar" en el panel) y se guarda cuándo escribió, para saber cuándo puede
+// retomar. `detectadoAt` es el primer mensaje de esta intervención; `ultimoMensajeAt` se
+// refresca con cada mensaje suyo.
+async function marcarAsesorHumano(psid) {
+  const previo = await getAsesorHumano(psid)
+  const ahora = Date.now()
+  await setEstado(psid, {
+    transferido: true,
+    asesor_humano: JSON.stringify({ detectadoAt: previo?.detectadoAt ?? ahora, ultimoMensajeAt: ahora }),
+  })
+  return !previo // true si es el primer mensaje del asesor en esta intervención
+}
+
+async function getAsesorHumano(psid) {
+  const estado = await getEstado(psid)
+  if (!estado?.asesor_humano) return null
+  try {
+    const v = typeof estado.asesor_humano === 'string' ? JSON.parse(estado.asesor_humano) : estado.asesor_humano
+    return v?.ultimoMensajeAt ? v : null
+  } catch { return null }
+}
+
+// La IA vuelve a atender: se quita el silencio y la marca de intervención.
+async function liberarAsesorHumano(psid) {
+  await setEstado(psid, { transferido: false, asesor_humano: null })
 }
 
 // ── Historial de conversación ─────────────────────────────────────────────────
@@ -508,12 +627,58 @@ async function guardarPedido(psid, items) {
 async function guardarCita(psid, datos) {
   const clienteId = await _clienteId(psid)
   if (!clienteId) return false
+  // `fecha` (DATE) es la versión estructurada de `dia` (texto): permite ordenar,
+  // detectar duplicados y que el panel de ventas la trate como fecha real.
   await pool.query(
-    `INSERT INTO citas_agentes (usuario_id, telefono, nombre, dia, hora, razon, ubicacion)
-     VALUES (?,?,?,?,?,?,?)`,
-    [clienteId, igTel(psid), datos.nombre, datos.dia, datos.hora, datos.motivo ?? null, datos.ubicacion]
+    `INSERT INTO citas_agentes (usuario_id, telefono, nombre, dia, fecha, hora, razon, ubicacion)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [clienteId, igTel(psid), datos.nombre, datos.dia, datos.fecha ?? null, datos.hora, datos.motivo ?? null, datos.ubicacion]
   )
   return true
+}
+
+// Citas del cliente que siguen en pie (no canceladas) de hoy en adelante. Sin esto no
+// había forma de cancelar ni de mover una cita desde la conversación.
+async function getCitasVigentes(psid) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, nombre, dia, fecha, hora, ubicacion, razon, estado
+       FROM citas_agentes
+       WHERE telefono = ? AND estado <> 'cancelada'
+         AND (fecha IS NULL OR fecha >= CURDATE())
+       ORDER BY fecha IS NULL, fecha ASC, hora ASC`,
+      [igTel(psid)]
+    )
+    return rows
+  } catch (e) {
+    console.warn('[db] no se pudieron leer las citas vigentes:', e.message)
+    return []
+  }
+}
+
+// Marca una cita como cancelada. El id se valida contra el psid: nadie puede cancelar la
+// cita de otro cliente.
+async function cancelarCita(psid, citaId) {
+  const [res] = await pool.query(
+    "UPDATE citas_agentes SET estado = 'cancelada' WHERE id = ? AND telefono = ? AND estado <> 'cancelada'",
+    [citaId, igTel(psid)]
+  )
+  return res.affectedRows > 0
+}
+
+// true si el cliente ya tiene una cita sin cancelar para esa fecha (ISO yyyy-mm-dd).
+async function existeCitaPendiente(psid, fechaIso) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT 1 FROM citas_agentes
+       WHERE telefono = ? AND fecha = ? AND estado <> 'cancelada' LIMIT 1`,
+      [igTel(psid), fechaIso]
+    )
+    return rows.length > 0
+  } catch (e) {
+    console.warn('[db] no se pudo comprobar cita duplicada:', e.message)
+    return false
+  }
 }
 
 // ── Deduplicación de eventos de Meta ─────────────────────────────────────────
@@ -607,7 +772,7 @@ async function registrarComentario(commentId) {
 async function getCitasRecientes(psid, limite = 3) {
   try {
     const [rows] = await pool.query(
-      `SELECT nombre, dia, hora, ubicacion, razon, estado
+      `SELECT id, nombre, dia, hora, ubicacion, razon, estado
        FROM citas_agentes WHERE telefono = ? ORDER BY created_at DESC LIMIT ?`,
       [igTel(psid), limite]
     )
@@ -682,6 +847,7 @@ module.exports = {
   runMigrations,
   getOrCreateClienteByPsid,
   actualizarInteraccion,
+  minutosDesdeUltimaInteraccion,
   getEstado,
   setEstado,
   getUltimoProducto,
@@ -690,9 +856,18 @@ module.exports = {
   getUltimosMostrados,
   limpiarEstado,
   debeEsperarAsesor,
+  tomadaPorAsesor,
+  solicitudAsesorPendiente,
+  asesorAtendiendo,
   marcarTransferido,
+  marcarAsesorHumano,
+  getAsesorHumano,
+  liberarAsesorHumano,
   guardarPedido,
   guardarCita,
+  existeCitaPendiente,
+  getCitasVigentes,
+  cancelarCita,
   getCitasRecientes,
   registrarMid,
   limpiarMidsAntiguos,

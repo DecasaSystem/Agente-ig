@@ -390,3 +390,67 @@ test('buscarProductoExacto: acepta el nombre real y tolera nombres pegados', () 
   assert.equal(agente.buscarProductoExacto('sofacama roma').nombre, 'SOFA CAMA ROMA')
   assert.equal(agente.buscarProductoExacto('LAMPARA DE PIE').nombre, 'LAMPARA DE PIE')
 })
+
+// ── Horario de atención y transferencias fuera de hora ────────────────────────
+// Bogotá es UTC-5 todo el año (sin horario de verano). 2026-09-15 es martes.
+
+test('estadoHorario: dentro y fuera del horario normal (sin margen)', () => {
+  const { estadoHorario } = agente
+  // Martes 10:00 → abierto
+  assert.equal(estadoHorario(0, new Date('2026-09-15T15:00:00Z')).abierto, true)
+  // Martes 16:50 → todavía abierto sin margen
+  assert.equal(estadoHorario(0, new Date('2026-09-15T21:50:00Z')).abierto, true)
+  // Martes 17:00 → cerrado, responden mañana
+  assert.deepEqual(estadoHorario(0, new Date('2026-09-15T22:00:00Z')), { abierto: false, proximaApertura: 'mañana a partir de las 8am' })
+  // Sábado 11:30 → abierto; sábado 12:30 → cerrado hasta el lunes
+  assert.equal(estadoHorario(0, new Date('2026-09-19T16:30:00Z')).abierto, true)
+  assert.equal(estadoHorario(0, new Date('2026-09-19T17:30:00Z')).proximaApertura, 'el lunes a partir de las 8am')
+  // Domingo → cerrado, mañana lunes
+  assert.equal(estadoHorario(0, new Date('2026-09-20T15:00:00Z')).proximaApertura, 'mañana lunes a partir de las 8am')
+})
+
+test('estadoHorario: con el margen de transferencia, desde las 4:40 pm ya es "mañana"', () => {
+  const { estadoHorario, MARGEN_CIERRE_TRANSFERENCIA_MIN } = agente
+  assert.equal(MARGEN_CIERRE_TRANSFERENCIA_MIN, 20)
+  // Martes 16:39 → aún se transfiere en el momento
+  assert.equal(estadoHorario(20, new Date('2026-09-15T21:39:00Z')).abierto, true)
+  // Martes 16:40 → fuera de horario para transferir
+  assert.deepEqual(estadoHorario(20, new Date('2026-09-15T21:40:00Z')), { abierto: false, proximaApertura: 'mañana a partir de las 8am' })
+  // Viernes 16:45 → el lunes
+  assert.equal(estadoHorario(20, new Date('2026-09-18T21:45:00Z')).proximaApertura, 'el lunes a partir de las 8am')
+  // Sábado 11:45 → el lunes
+  assert.equal(estadoHorario(20, new Date('2026-09-19T16:45:00Z')).proximaApertura, 'el lunes a partir de las 8am')
+  // Miércoles 7:30 am → hoy a las 8
+  assert.equal(estadoHorario(20, new Date('2026-09-16T12:30:00Z')).proximaApertura, 'hoy a partir de las 8am')
+})
+
+test('solicitar_asesor fuera de horario: crea la tarjeta pero NO silencia a la IA', async () => {
+  const db = require('../db.js')
+  const originales = {
+    getUltimoProducto: db.getUltimoProducto, getEstado: db.getEstado,
+    marcarTransferido: db.marcarTransferido, solicitudAsesorPendiente: db.solicitudAsesorPendiente,
+    registrarEvento: db.registrarEvento,
+  }
+  const RealDate = Date
+  let transferido = null
+  db.getUltimoProducto = async () => null
+  db.getEstado = async () => ({ carrito: '[]' })
+  db.marcarTransferido = async (_psid, valor) => { transferido = valor }
+  db.solicitudAsesorPendiente = async () => true // ya hay tarjeta: no se manda otra
+  db.registrarEvento = async () => {}
+  // Martes 17:30 Bogotá
+  global.Date = class extends RealDate {
+    constructor(...a) { return a.length ? new RealDate(...a) : new RealDate('2026-09-15T22:30:00Z') }
+    static now() { return new RealDate('2026-09-15T22:30:00Z').getTime() }
+  }
+  try {
+    const salida = await agente.ejecutarTool('psid-noche', 'solicitar_asesor', { motivo: 'quiere envío a Cali', tipo: 'asesor' }, {})
+    assert.equal(transferido, null, 'no debe marcar transferido fuera de horario')
+    assert.match(salida, /FUERA DE HORARIO/)
+    assert.match(salida, /mañana a partir de las 8am/)
+    assert.match(salida, /sigues aquí/)
+  } finally {
+    global.Date = RealDate
+    Object.assign(db, originales)
+  }
+})

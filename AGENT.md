@@ -232,4 +232,84 @@ Los dos pendientes son más invasivos (una llamada extra a OpenAI para resumir/e
 - **Deploy**: Render. Plan de 512 Mi — cuidado con procesar imágenes en lote (ver `image-hash.js`, que usa miniaturas de Cloudinary y `sharp.cache(false)` justo por esto).
 - **Inventario y hashes**: se refrescan cada 30 min; los hashes solo se recalculan para fotos nuevas o cambiadas, máximo 60 por ciclo.
 - **Ventana de 24 h de Meta**: fuera de ella no se puede escribir al cliente sin etiqueta especial. Relevante si algún día el bot inicia conversaciones.
-- **Reactivación tras transferencia**: la libera el botón *Terminar* del panel; como red de seguridad, también se libera tras 6 h de inactividad del cliente (`db.js`, `debeEsperarAsesor`).
+- **Reactivación tras transferencia**: la libera el botón *Terminar* del panel. Mientras la tarjeta esté `tomada` en `conversaciones_wa` (misma BD) la IA calla sin timeout, ni siquiera manda el aviso "un asesor te responderá"; y antes de cada envío re-chequea por si el asesor tomó el chat a mitad del turno (`db.js`: `debeEsperarAsesor`, `tomadaPorAsesor`, `asesorAtendiendo`). La red de seguridad de 6 h de inactividad solo aplica si nadie ha tomado la tarjeta.
+- **Transferencia fuera de horario** (Lun-Vie desde las 4:40 pm, Sáb desde las 11:40 am, domingo): `solicitar_asesor` crea la tarjeta igual pero NO silencia a la IA; Elena le dice al cliente cuándo le escribirá el asesor (`estadoHorario().proximaApertura`) y sigue atendiéndolo hasta que alguien pulse *Tomar*. Si ya hay una tarjeta pendiente del cliente (últimos 3 días) no se crea otra (`db.solicitudAsesorPendiente`).
+
+---
+
+## Cambios de la auditoría (sept 2026)
+
+- `fechas.js` — fecha en hora de Colombia + próximos días en el prompt; `agendar_cita` valida fecha real/no pasada/no domingo/día coherente y guarda `citas_agentes.fecha` (DATE), sin duplicar citas del mismo día.
+- `vision-catalogo.js` — identificación visual por categoría tras el dHash: clasifica el mueble y compara solo con las miniaturas de su categoría (≥85 "es este", 60-84 "se parece a", <60 no identificado). Evento `vision_catalogo` en `ig_eventos`.
+- Una foto solo se compone sobre el último producto si el cliente lo pide ("cómo quedaría en mi sala"); antes cualquier imagen posterior a mostrar un producto se trataba como foto de la sala.
+- El precio del carrito sale siempre de la BD; `encontrarVariante` exige coincidencia inequívoca.
+- `/debug-stock` y `/stats` exigen `X-Agent-Token`.
+- Env nuevas: `COMPRAS_WHATSAPP`, `CONTACTO_PRIVACIDAD_EMAIL` (páginas legales), `OPENAI_VISION_MODEL`, `TIMEZONE`.
+- La suite (`npm test`) ya corre sin `OPENAI_API_KEY`; antes pasaba en verde con 0 tests.
+
+## Segunda tanda de la auditoría (P1/P2)
+
+- Reintentos con backoff para OpenAI (`reintentos.js`); `temperature` 0.5 → 0.3 (igual que WhatsApp).
+- Una caída de OpenAI ya no crea una tarjeta por cliente: se pide paciencia y solo se escala si vuelve a fallar en los 10 min siguientes.
+- `quitar_del_carrito` exige coincidencia inequívoca (antes "quita el sofá" borraba los dos sofás del carrito).
+- Nota de regreso cuando el cliente vuelve tras ≥45 min (medida antes de `actualizarInteraccion`).
+- Prompt alineado con WhatsApp: "me gusta" no es confirmación de compra, transferir cuando el cliente lo pide explícitamente / no hay certeza / 0 resultados, y máximo 150 palabras.
+
+## Tercera tanda (cierre de P1)
+
+- Tool `cancelar_cita` (+ `db.getCitasVigentes` / `db.cancelarCita`): cancela o mueve la visita desde la conversación, pide elegir si hay varias, y notifica la cancelación al panel. `consultar_estado` y `getCitasRecientes` devuelven el `id` de la cita.
+- La respuesta entra al historial solo si Graph API la entregó; si no, se alerta.
+- `sendQuickReplies` ahora sí cae a texto plano cuando Meta rechaza los botones (el comentario lo prometía pero no ocurría).
+- Leads de proveedor con `tipo: 'asesor'` (antes `'otro'`, no válido); un rechazo 4xx del panel se alerta al primer intento en vez de reintentarse un día entero.
+
+## Cuarta tanda: configuración por negocio (multi-cliente)
+
+Los datos de DeCasa salieron del código: ahora viven en `negocio.json` y el system prompt se genera con `prompt.js` (compartido con el agente de WhatsApp, con las diferencias por canal). Ver `DESPLEGAR-NUEVO-CLIENTE.md` en la raíz del proyecto.
+
+Salen de la config: identidad, sedes, categorías, horario y sus textos, zona horaria, moneda, saludo, textos públicos de comentarios, handle de Instagram, páginas legales (privacidad y eliminación de datos), límite del carrito y validación de sede.
+
+Módulos compartidos con `Agente-ws` (copias idénticas, hay que sincronizar los cambios): `negocio.json`, `negocio.js`, `prompt.js`, `fechas.js`, `vision-catalogo.js`, `reintentos.js`.
+
+## Quinta tanda: núcleo compartido (core/)
+
+Los archivos compartidos con `Agente-ws` tienen su fuente única en `core/` de la raíz y se
+copian con `npm run sync` (no se importan con `../core`: cada agente se despliega por
+separado). `tests/core-sincronizado.test.js` falla si esta copia se separa de `core/`.
+
+Edita siempre en `core/`, nunca la copia. Ver `core/README.md` y `DESPLEGAR-NUEVO-CLIENTE.md`.
+
+## Detección automática de un asesor humano (Instagram)
+
+**El problema que resuelve:** antes la IA solo se callaba si alguien pulsaba *Tomar* en el
+panel de Redes. Si un asesor entraba a escribirle al cliente por su cuenta, la IA no se
+enteraba y seguía respondiendo: el cliente recibía dos respuestas a la vez.
+
+**Cómo funciona:** Instagram devuelve como *eco* todo lo que sale de la cuenta del negocio,
+tanto lo que envía la IA como lo que escribe una persona. Para distinguirlos:
+
+1. Todos los envíos de texto del agente pasan por `enviarTextoIA()`, que deja constancia
+   del texto (en memoria, 10 min, 30 últimos por cliente).
+2. Al llegar un eco, `detectarAsesorHumano()` comprueba si ese texto lo envió la IA. La
+   comparación es por inclusión para los mensajes largos (salen troceados en 980 caracteres
+   y cada trozo vuelve como un eco distinto) y exacta para los cortos, para que un "Listo"
+   del asesor no se confunda con uno de la IA.
+3. Como el registro en memoria se pierde en cada redeploy, hay una segunda comprobación
+   contra el historial guardado: sin ella, tras un reinicio los ecos de lo que la IA envió
+   antes parecerían de un humano y la callarían sin motivo.
+4. Si no es suyo, lo escribió una persona: `db.marcarAsesorHumano()` silencia a la IA en el
+   acto y guarda el mensaje como `[Asesor] ...` para que tenga contexto al retomar. No se
+   le dice nada al cliente: la transición es invisible. Tampoco se crea una tarjeta en el
+   panel — el asesor ya está atendiendo.
+
+**Cuándo vuelve a atender:** cuando el asesor lleva `operacion.minutosSilencioAsesor` de
+`negocio.json` (por defecto 60) sin escribir. El reloj corre desde el último mensaje **del
+asesor**, no del cliente: mientras el asesor siga contestando, la IA calla aunque el
+cliente escriba cada minuto. Si el chat se tomó desde el panel, no hay tiempo límite: manda
+el botón *Terminar*, como siempre.
+
+**En WhatsApp no se puede hacer:** los asesores responden desde su número personal por
+`wa.me`, en una conversación distinta a la del número de Twilio, así que esos mensajes
+nunca llegan al agente. Ahí el silencio sigue dependiendo del panel.
+
+Esquema: columna `estado_usuario.asesor_humano` (JSON con `detectadoAt` y `ultimoMensajeAt`),
+creada sola al arrancar. Evento de métricas: `asesor_humano_detectado`.
