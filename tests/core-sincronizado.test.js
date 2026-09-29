@@ -20,7 +20,12 @@ test('los archivos compartidos coinciden con core/', t => {
   // En un despliegue aislado (solo la carpeta del agente) core/ no existe: nada que comparar.
   if (!fs.existsSync(CORE)) return t.skip('core/ no está disponible en este entorno')
 
-  const compartidos = fs.readdirSync(CORE).filter(f => /\.(js|json)$/.test(f)).sort()
+  // Incluye las subcarpetas de core/ (core/evaluacion/…), igual que el script de sync.
+  const listar = (dir, prefijo = '') => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => {
+    const relativo = prefijo ? path.join(prefijo, e.name) : e.name
+    return e.isDirectory() ? listar(path.join(dir, e.name), relativo) : (/\.(js|json)$/.test(e.name) ? [relativo] : [])
+  }).sort()
+  const compartidos = listar(CORE)
   for (const esperado of ESPERADOS) {
     assert.ok(compartidos.includes(esperado), `core/ debería contener ${esperado}`)
   }

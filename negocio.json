@@ -164,6 +164,14 @@
     "whatsapp": "¡Hola! 👋 Soy Elena, tu asesora de DeCasa.\n\n🏠 Especialistas en muebles de madera Flor Morado (más de 200 productos)\n📍 Tiendas en Armenia y Pereira\n\n📦 Categorías: Sillas, Bases de Comedor, Camas, Mesas, Sofás, Colchones\n🕐 Horario: L-V 8am-5pm | Sábado 8am-12pm\n\n📸 ¿Nos compartes una foto o captura de lo que buscas? Si alcanzas a ver el nombre del producto, cuéntanoslo también así te ayudamos más rápido\n\n💬 ¿Qué mueble estás buscando hoy? 😊",
     "instagram": "¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️ Si nos compartes una foto o captura, cuéntanos también el nombre del producto si lo alcanzas a ver 📸"
   },
+  "seguimientos": {
+    "_nota": "Mensajes que el agente envía por iniciativa propia. WhatsApp e Instagram solo permiten escribir libremente dentro de las 24 h desde el último mensaje del cliente: fuera de esa ventana el seguimiento se descarta (no se envía nada). Placeholders disponibles: {nombre} {producto} {dia} {hora} {sede}.",
+    "activos": true,
+    "cita_24h": "¡Hola{nombre}! 😊 Te recuerdo tu visita de mañana {dia} a las {hora} en {sede}. ¿Nos vemos? Si necesitas cambiarla, dime y la movemos sin problema 🙌",
+    "cita_2h": "¡Hola{nombre}! Te esperamos hoy a las {hora} en {sede} 🛋️ Cualquier cosa me escribes por aquí 😊",
+    "carrito_abandonado": "¡Hola{nombre}! 😊 Vi que te quedó {producto} en el carrito. ¿Seguimos con eso? Te lo puedo apartar o resolverte cualquier duda 🙌"
+  },
+
   "contactos": {
     "_nota": "Datos sensibles: se pueden sobrescribir con las variables de entorno COMPRAS_WHATSAPP y CONTACTO_PRIVACIDAD_EMAIL para no tenerlos en el repositorio.",
     "comprasWhatsapp": null,

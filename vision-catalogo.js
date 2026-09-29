@@ -23,6 +23,13 @@
 
 const MODELO = process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-4o';
 
+// Clasificar la foto (¿qué tipo de mueble es? ¿se lee algún nombre?) es una tarea sencilla
+// que devuelve un JSON corto: no hace falta el modelo grande, y se hace en CADA foto que
+// manda un cliente. La comparación visual contra el catálogo sí se queda en el grande,
+// porque ahí sí importa el detalle. Si en la práctica el pequeño se equivoca de categoría,
+// basta con poner OPENAI_MODEL_RAPIDO al mismo valor que OPENAI_MODEL.
+const MODELO_RAPIDO = process.env.OPENAI_MODEL_RAPIDO || 'gpt-4o-mini';
+
 // Umbrales de similitud (0-100) que devuelve el comparador.
 const SIMILITUD_ALTA  = 85; // se presenta como el producto identificado
 const SIMILITUD_MEDIA = 60; // se presenta como "se parece mucho a…"
@@ -74,7 +81,7 @@ async function clasificarImagen(openai, imagen, categorias) {
   };
 
   const resp = await openai.chat.completions.create({
-    model: MODELO,
+    model: MODELO_RAPIDO,
     temperature: 0,
     max_tokens: 250,
     response_format: { type: 'json_schema', json_schema: schema },
@@ -270,4 +277,5 @@ module.exports = {
   clasificarImagen, compararConCategoria, identificarPorVision, construirContextoVision,
   urlMiniatura, normalizar,
   SIMILITUD_ALTA, SIMILITUD_MEDIA, LOTE_MINIATURAS, MAX_CATEGORIAS,
+  MODELO, MODELO_RAPIDO,
 };

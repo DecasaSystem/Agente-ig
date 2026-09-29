@@ -313,3 +313,22 @@ nunca llegan al agente. Ahí el silencio sigue dependiendo del panel.
 
 Esquema: columna `estado_usuario.asesor_humano` (JSON con `detectadoAt` y `ultimoMensajeAt`),
 creada sola al arrancar. Evento de métricas: `asesor_humano_detectado`.
+
+## Plan de mejoras — Fases 1 y 2 (ver DESPLEGAR-NUEVO-CLIENTE.md)
+
+- Prompt cacheable: la fecha va como mensaje `system` aparte; `logUsoTokens` muestra el
+  `% en caché`.
+- `core/vigilancia.js` cada 30 min: inventario vacío, cero conversaciones en horario,
+  notificaciones atascadas y **token de Meta con menos de 7 días** (`ig.expiracionToken()`).
+- `core/seguimientos.js` + tabla `ig_seguimientos`: recordatorios de cita (24 h y 2 h antes)
+  y carrito abandonado, solo dentro de la ventana de 24 h de Instagram y nunca mientras haya
+  un asesor en la conversación (incluido el detectado por los ecos).
+- `reportar_objecion`: avisa a ventas sin silenciar a la IA ni decírselo al cliente.
+- `clasificarImagen()` usa `OPENAI_MODEL_RAPIDO`.
+
+## Plan de mejoras — Fase 3 (calidad medible)
+
+- `npm run eval:ig` evalúa el prompt de Instagram contra el modelo real (`core/evaluacion/`).
+- `core/memoria.js`: perfil del cliente (columna `perfil`) y resumen rodante de la
+  conversación (columna `resumen_conversacion`). El presupuesto y los productos se capturan
+  solos de las herramientas; el espacio y los gustos con `recordar_preferencia`.

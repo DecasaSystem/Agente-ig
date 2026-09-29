@@ -192,6 +192,25 @@ function splitMessage(texto, maxLen) {
   return chunks.filter(Boolean)
 }
 
+// Cuándo caduca el token de acceso, en milisegundos (o null si no se puede saber). Los
+// tokens de larga duración de Meta duran ~60 días: si caduca, el agente se queda mudo y
+// hoy solo nos enteramos cuando un envío falla con código 190, es decir, cuando ya hay
+// clientes sin respuesta. Esto permite avisar días antes (ver core/vigilancia.js).
+async function expiracionToken() {
+  try {
+    const { data } = await axios.get(`${BASE}/debug_token`, {
+      params: { input_token: TOKEN(), access_token: TOKEN() },
+      timeout: 10000,
+    })
+    const expira = data?.data?.expires_at
+    // 0 significa "no caduca" (tokens de sistema): no hay nada que avisar.
+    return expira ? expira * 1000 : null
+  } catch (e) {
+    console.warn('[IG] no se pudo comprobar la caducidad del token:', e.response?.data?.error?.message ?? e.message)
+    return null
+  }
+}
+
 // Obtener caption/detalles de un post o historia por su media ID
 async function getMediaDetails(mediaId) {
   try {
@@ -210,6 +229,6 @@ async function getMediaDetails(mediaId) {
 
 module.exports = {
   sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo,
-  downloadMediaToBuffer, getMediaDetails,
+  downloadMediaToBuffer, getMediaDetails, expiracionToken,
   sendQuickReplies, sendCarousel, sendPrivateReplyToComment, replyToComment,
 }

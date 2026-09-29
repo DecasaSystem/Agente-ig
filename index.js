@@ -21,6 +21,9 @@ const fechas  = require('./fechas')
 const reintentos = require('./reintentos')
 const negocio = require('./negocio')
 const { construirSystemPrompt } = require('./prompt')
+const vigilancia = require('./vigilancia')
+const seguimientos = require('./seguimientos')
+const memoria = require('./memoria')
 const { conReintentos } = reintentos
 const visionCatalogo = require('./vision-catalogo')
 
@@ -385,6 +388,36 @@ async function detectarAsesorHumano(psid, texto) {
   }
 }
 
+// Guarda en el perfil del cliente lo que se va sabiendo de él. La mayor parte se captura
+// sola de lo que ya pasa por las herramientas; solo lo cualitativo necesita que el modelo lo
+// cuente con recordar_preferencia. Nunca debe romper el turno.
+async function actualizarPerfil(psid, cambios) {
+  try {
+    const actual = await db.getPerfil(psid)
+    await db.setPerfil(psid, memoria.fusionarPerfil(actual, cambios))
+  } catch (e) {
+    console.warn('[memoria] no se pudo actualizar el perfil:', e.message)
+  }
+}
+
+// Lo que core/seguimientos.js necesita del agente: cómo enviar, cómo saber si se puede
+// escribir y cómo consultar la base de datos. Se inyecta para poder probar el módulo sin
+// red ni BD.
+function depsSeguimientos() {
+  return {
+    db,
+    enviar: (psid, texto) => enviarTextoIA(psid, texto),
+    minutosDesdeUltimoMensaje: psid => db.minutosDesdeUltimaInteraccion(psid),
+    // Ojo: aquí cuenta también el asesor detectado por los ecos, no solo el panel.
+    hayAsesorAtendiendo: async psid => {
+      const estado = await db.getEstado(psid)
+      return !!estado?.transferido
+    },
+    guardarEnHistorial: (psid, texto) => db.guardarMensaje(psid, 'assistant', texto).catch(() => {}),
+    evento: (psid, tipo, detalle) => evento(psid, tipo, detalle),
+  }
+}
+
 // Fallos técnicos recientes por cliente: sirve para escalar a un asesor solo si el
 // problema se repite, en vez de crear una tarjeta en el primer tropiezo de red.
 const fallosTecnicos = new Map()
@@ -559,6 +592,29 @@ const TOOLS = [
     parameters: { type: 'object', properties: {} },
   },
   {
+    name: 'recordar_preferencia',
+    description: 'Guarda lo que el cliente cuenta de sí mismo para no hacérselo repetir en otra conversación: para qué espacio busca el mueble ("apartamento pequeño", "cuarto de mi hija") y qué le gusta o necesita ("madera clara", "que resista mascotas"). Llámalo en cuanto lo diga, sin anunciárselo. NO guardes datos sensibles ni nada que no sirva para venderle mejor.',
+    parameters: {
+      type: 'object',
+      properties: {
+        espacio:      { type: 'string', description: 'Para qué espacio o persona busca el mueble' },
+        preferencias: { type: 'array', items: { type: 'string' }, description: 'Gustos o necesidades concretas (material, color, resistencia)' },
+      },
+    },
+  },
+  {
+    name: 'reportar_objecion',
+    description: 'Úsalo cuando el cliente muestra interés pero pone un freno que tú no puedes resolver: dice que está caro, que lo va a pensar, que lo consulta con su pareja, que lo ve más adelante, o compara con otra tienda. NO le digas al cliente que estás reportando nada y NO te despidas: sigue atendiéndolo e intenta resolver la objeción. Esto solo avisa al equipo de ventas.',
+    parameters: {
+      type: 'object',
+      properties: {
+        objecion: { type: 'string', description: 'Qué dijo el cliente, en sus palabras o resumido' },
+        producto: { type: 'string', description: 'Producto sobre el que puso el freno, si lo hay' },
+      },
+      required: ['objecion'],
+    },
+  },
+  {
     name: 'reportar_proveedor',
     description: 'Úsalo cuando la persona NO es un cliente sino un PROVEEDOR o alguien que quiere VENDERLE a la empresa o proponer una colaboración/alianza comercial (ej: "somos importadores/fabricantes de X", "quiero enviarles mi portafolio", "les ofrezco materia prima/tapas/piedra", "propuesta comercial", "trabajar juntos"). NO lo trates como cliente, NO agendes visita, NO le des ningún número. Solo se notifica internamente al equipo de compras.',
     parameters: {
@@ -574,13 +630,31 @@ const TOOLS = [
 // Log del consumo de tokens de un turno, con costo estimado (tarifas gpt-4o:
 // $2.50/1M tokens de entrada, $10/1M de salida). Permite auditar el gasto desde los
 // logs sin depender solo del dashboard de OpenAI.
-function logUsoTokens(psid, promptTok, completionTok, rondas) {
-  const costo = (promptTok / 1e6) * 2.5 + (completionTok / 1e6) * 10
-  console.log(`[tokens] ${psid} · ${rondas} ronda(s) · entrada ${promptTok} · salida ${completionTok} · ~$${costo.toFixed(4)}`)
+// Los tokens "cacheados" son los de entrada que OpenAI sirvió desde su caché de prefijo,
+// a mitad de precio. Se logean para comprobar que el caché funciona: si sale 0 a partir
+// del segundo mensaje, algo cambiante se está colando delante del prompt estable.
+function logUsoTokens(psid, promptTok, completionTok, rondas, cacheados = 0) {
+  const costo = ((promptTok - cacheados) / 1e6) * 2.5 + (cacheados / 1e6) * 1.25 + (completionTok / 1e6) * 10
+  const pctCache = promptTok ? Math.round((cacheados / promptTok) * 100) : 0
+  console.log(`[tokens] ${psid} · ${rondas} ronda(s) · entrada ${promptTok} (${pctCache}% en caché) · salida ${completionTok} · ~$${costo.toFixed(4)}`)
 }
 
 async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo = {}, imageMimeType = 'image/jpeg', contextoExtra = null) {
-  const historial = await db.getHistorial(psid, 12)
+  // En conversaciones largas se pasan los últimos mensajes literales más un resumen de los
+  // anteriores: antes se truncaba en 12 sin resumen y el agente olvidaba el principio,
+  // incluido lo que el cliente ya había descartado.
+  const { mensajes: historial } = await memoria.prepararHistorial(
+    { db }, psid, { openai, modeloRapido: process.env.OPENAI_MODEL_RAPIDO || 'gpt-4o-mini' }
+  )
+
+  // Lo que ya se sabe del cliente y el resumen de lo hablado. Si algo falla, el turno sigue.
+  let contextoPerfil = null, contextoResumen = null
+  try {
+    contextoPerfil = memoria.construirContextoPerfil(await db.getPerfil(psid), { formatearMoneda: n => `$${Number(n).toLocaleString('es-CO')}` })
+    contextoResumen = memoria.construirContextoResumen(await db.getResumenConversacion(psid))
+  } catch (e) {
+    console.warn('[memoria] no se pudo cargar el contexto del cliente:', e.message)
+  }
 
   const userContent = imageBase64
     ? [
@@ -593,9 +667,16 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   // las rondas siguientes (ver más abajo) sin re-facturar los tokens de visión.
   const userMsg = { role: 'user', content: userContent }
   const messages = [
+    // El primer mensaje es el prompt grande y SIEMPRE idéntico: es el prefijo que OpenAI
+    // cachea (y cobra más barato). Todo lo que cambia va detrás, en mensajes aparte. Antes
+    // la fecha iba dentro del prompt, así que el prefijo cambiaba cada día y el caché no
+    // llegaba a usarse.
     { role: 'system', content: buildSystemPrompt() },
+    { role: 'system', content: fechas.bloqueFechaParaPrompt() },
     // Contexto efímero (p.ej. los productos recién mostrados) — no se guarda en el
     // historial, solo ayuda a resolver referencias en este turno.
+    ...(contextoPerfil ? [{ role: 'system', content: contextoPerfil }] : []),
+    ...(contextoResumen ? [{ role: 'system', content: contextoResumen }] : []),
     ...(contextoExtra ? [{ role: 'system', content: contextoExtra }] : []),
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
     userMsg,
@@ -613,7 +694,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
 
   // Contadores de tokens para auditar el gasto real por conversación (OpenAI los
   // devuelve en response.usage). Se logean al terminar el turno.
-  let tokPrompt = 0, tokCompletion = 0
+  let tokPrompt = 0, tokCompletion = 0, tokCacheados = 0
 
   // Un asesor puede pulsar "Tomar" en el panel mientras este turno está en curso (entre
   // el debounce, las descargas de medios y las rondas de OpenAI pasan varios segundos).
@@ -625,7 +706,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   const asesorTomoElChat = async (round) => {
     if (transfiriendo || !(await db.asesorAtendiendo(psid))) return false
     console.log(`[transferido] ${psid}: un asesor tomó el chat a mitad del turno — se descarta la respuesta`)
-    logUsoTokens(psid, tokPrompt, tokCompletion, round)
+    logUsoTokens(psid, tokPrompt, tokCompletion, round, tokCacheados)
     return true
   }
 
@@ -652,6 +733,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
     if (response.usage) {
       tokPrompt     += response.usage.prompt_tokens     ?? 0
       tokCompletion += response.usage.completion_tokens ?? 0
+      tokCacheados  += response.usage.prompt_tokens_details?.cached_tokens ?? 0
     }
 
     const choice = response.choices[0]
@@ -662,7 +744,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       if (await asesorTomoElChat(round + 1)) return null
       const texto = choice.message.content ?? ''
       validarPrecios(psid, texto, preciosVistos)
-      logUsoTokens(psid, tokPrompt, tokCompletion, round + 1)
+      logUsoTokens(psid, tokPrompt, tokCompletion, round + 1, tokCacheados)
       return texto
     }
 
@@ -695,7 +777,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
 
   evento(psid, 'sin_resolver', 'limite de rondas')
   await enviarNotificacionSistema(psid, userInfo, 'La IA no pudo resolver la solicitud tras varios intentos (límite de rondas de herramientas alcanzado). Revisar conversación.', 'asesor').catch(err => console.error('[redes] no se pudo notificar límite de rondas:', err.message))
-  logUsoTokens(psid, tokPrompt, tokCompletion, 6)
+  logUsoTokens(psid, tokPrompt, tokCompletion, 6, tokCacheados)
   const avisoRondas = avisoFueraHorario()
   return `Tuve un problema procesando tu solicitud. Un asesor te contactará pronto 🙏${avisoRondas ? `\n\n${avisoRondas}` : ''}`
 }
@@ -975,6 +1057,8 @@ async function recordarMostrados(psid, productos) {
     await db.setUltimosMostrados(psid, productos.slice(0, 6).map(p => ({
       nombre: p.nombre, precio: precioMinimo(p),
     })))
+    // Lo mostrado queda en su perfil: si vuelve en unos días, el agente sabe por dónde iba.
+    actualizarPerfil(psid, { productos_interes: productos.slice(0, 3).map(p => p.nombre) }).catch(() => {})
   } catch (e) { console.warn('[mostrados] no se pudo guardar:', e.message) }
 }
 
@@ -990,6 +1074,8 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'buscar_por_presupuesto': {
+      // El presupuesto llega aquí gratis: se guarda para no preguntárselo otra vez.
+      if (Number(args.presupuesto_max) > 0) actualizarPerfil(psid, { presupuesto: Number(args.presupuesto_max) }).catch(() => {})
       // Con variantes cuenta el precio de entrada: si el cliente tiene $3.000.000 y la
       // cama en 1.40 vale $2.980.000, el producto entra aunque la de 2 metros se pase.
       let base = inventario.filter(p => precioMinimo(p) > 0 && precioMinimo(p) <= args.presupuesto_max)
@@ -1094,6 +1180,17 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       }
       evento(psid, 'cita', `${sedeNombre} — ${diaTexto} ${horaTexto}`)
 
+      // Recordatorios: el día antes y un par de horas antes. Es el seguimiento con menos
+      // riesgo y más valor — el cliente PIDIÓ la cita — y reduce que no se presente.
+      seguimientos.programarRecordatoriosCita(depsSeguimientos(), {
+        destinatario: psid,
+        referencia:   val.fecha.iso,
+        fechaIso:     val.fecha.iso,
+        hora:         horaTexto,
+        nombre:       args.nombre,
+        sede:         sedeNombre,
+      }).catch(e => console.warn('[seguimientos] no se programaron los recordatorios:', e.message))
+
       notificarRedes(
         psid, userInfo,
         `Cita: ${args.nombre} — ${sedeNombre} — ${diaTexto} ${horaTexto}${motivo ? ` — ${motivo}` : ''}`,
@@ -1129,6 +1226,11 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
 
       const sedeNombreCita = SEDE_NOMBRE[cita.ubicacion] ?? `Sede ${cita.ubicacion}`
       evento(psid, 'cita_cancelada', `${sedeNombreCita} — ${cita.dia} ${cita.hora}`)
+      // Sin esto, el cliente que canceló recibiría el recordatorio de una visita que ya no existe.
+      if (cita.fecha) {
+        const fechaRef = cita.fecha instanceof Date ? cita.fecha.toISOString().slice(0, 10) : String(cita.fecha).slice(0, 10)
+        seguimientos.cancelar(depsSeguimientos(), { destinatario: psid, referencia: fechaRef }).catch(() => {})
+      }
       // El panel de ventas tiene que enterarse: si no, el asesor prepara el producto y
       // espera a un cliente que ya avisó que no va.
       notificarRedes(
@@ -1169,6 +1271,29 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         return `Se avisó a un asesor porque ya van varios intentos sin identificar la imagen. Coméntale al cliente que un asesor también le va a ayudar con esto, sin dejar de mostrarle opciones parecidas.${avisoFueraHorario() ? ` IMPORTANTE: estamos fuera de horario (${negocio.horarioTexto}), avísale que el asesor le responderá en el próximo horario hábil para que no espere.` : ''}`
       }
       return 'Registrado. Sigue el flujo normal: pregunta si el cliente puede leer el nombre y muéstrale opciones parecidas según el tipo de mueble que identifiques.'
+    }
+
+    case 'recordar_preferencia': {
+      await actualizarPerfil(psid, { espacio: args.espacio, preferencias: args.preferencias })
+      return 'Anotado. NO se lo menciones al cliente: sigue la conversación con normalidad.'
+    }
+
+    case 'reportar_objecion': {
+      // Una objeción es el momento de más valor de la conversación: el cliente quiere el
+      // producto pero algo lo frena. El agente sigue intentándolo y el equipo se entera
+      // para trabajarlo a mano si vale la pena. Al cliente NO se le dice nada de esto.
+      const objecion = String(args.objecion ?? '').substring(0, 200)
+      evento(psid, 'objecion', objecion)
+      const carritoObj = await getCarrito(psid)
+      const detalleProducto = args.producto ? `\nProducto: ${args.producto}` : ''
+      const detalleCarrito = carritoObj.length ? `\nCarrito: ${carritoObj.map(i => i.producto).join(', ')}` : ''
+      notificarRedes(
+        psid, userInfo,
+        `OBJECIÓN SIN RESOLVER 🤔\n${objecion}${detalleProducto}${detalleCarrito}\nEl cliente sigue hablando con la IA; esto es solo para que ventas decida si hace seguimiento.`,
+        'asesor',
+        { carrito: carritoObj.length ? carritoObj : undefined }
+      )
+      return 'Registrado para el equipo de ventas. NO le menciones esto al cliente ni te despidas: sigue atendiéndolo e intenta resolver la objeción tú misma (opciones más económicas con buscar_por_presupuesto, beneficios del producto, formas de pago).'
     }
 
     case 'reportar_proveedor': {
@@ -1312,6 +1437,14 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       }
       carrito.push({ producto: nombreCarrito, precio: precioFinal, cantidad: args.cantidad ?? 1 })
       await setCarrito(psid, carrito)
+
+      // Si no vuelve, se le escribe UNA vez a las 24 h (y solo si sigue dentro de la
+      // ventana de mensajería de Instagram).
+      seguimientos.programarCarritoAbandonado(depsSeguimientos(), {
+        destinatario: psid,
+        producto:     nombreCarrito,
+        nombre:       userInfo?.nombre ?? null,
+      }).catch(e => console.warn('[seguimientos] carrito abandonado no programado:', e.message))
       const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
       return `¡Listo! 🛍️ *${nombreCarrito}* agregado al carrito por ${precioFinal}.\nTotal: *$${total.toLocaleString('es-CO')}* (${carrito.length} producto${carrito.length > 1 ? 's' : ''})\n\n¿Agregamos algo más o confirmamos el pedido?`
     }
@@ -1320,6 +1453,8 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const carrito = await getCarrito(psid)
       if (!args.producto) {
         await setCarrito(psid, [])
+        // Sin carrito no hay carrito que recordar.
+        seguimientos.cancelar(depsSeguimientos(), { destinatario: psid, tipo: seguimientos.TIPOS.CARRITO_ABANDONADO }).catch(() => {})
         return 'Carrito vaciado 🗑️ ¿Te puedo ayudar a buscar algo? 😊'
       }
       // Antes se comparaba por los primeros 15 caracteres: "quita el sofá" con dos sofás
@@ -1361,7 +1496,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         alertar('No se pudo guardar el pedido', `psid=${psid} ${e.message}`)
         return 'No pude registrar el pedido en este momento. Dile al cliente que un asesor lo contactará para completarlo, y llama a solicitar_asesor.'
       }
-      evento(psid, 'pedido', `$${total.toLocaleString('es-CO')}`)
+      evento(psid, 'pedido', `${total.toLocaleString('es-CO')}`)
+      // El carrito ya es un pedido: recordárselo sería absurdo.
+      seguimientos.cancelar(depsSeguimientos(), { destinatario: psid, tipo: seguimientos.TIPOS.CARRITO_ABANDONADO }).catch(() => {})
 
       notificarRedes(
         psid, userInfo,
@@ -2267,6 +2404,22 @@ async function startServer() {
   // Worker de la cola durable de notificaciones a Redes (reintentos con backoff).
   setInterval(() => { procesarColaNotificaciones() }, 60 * 1000)
 
+  // Vigilancia del negocio: avisa si el agente deja de vender EN SILENCIO (inventario
+  // vacío, ninguna conversación en horario, notificaciones que no llegan al panel, token
+  // de Meta a punto de caducar). Las otras alertas solo cubren que el proceso se caiga.
+  vigilancia.iniciarVigilancia({
+    contarConversaciones:          horas => db.contarConversacionesRecientes(horas),
+    contarInventario:              () => inventario.length,
+    contarNotificacionesAtascadas: () => db.contarNotificacionesAtascadas(),
+    estadoHorario:                 () => estadoHorario(),
+    expiracionToken:               () => ig.expiracionToken(),
+    alertar,
+  }, 30)
+
+  // Seguimientos: recordatorios de cita y carrito abandonado. Solo dentro de la ventana de
+  // 24 h de Instagram y nunca por encima de un asesor humano (ver core/seguimientos.js).
+  seguimientos.iniciarWorker(depsSeguimientos(), 10)
+
   app.listen(PORT, () => {
     console.log(`[server] Instagram Agent corriendo en puerto ${PORT}`)
   })
@@ -2281,6 +2434,7 @@ if (require.main === module) {
 
 // Superficie exportada para tests unitarios (funciones puras / con inyección).
 module.exports = {
+  TOOLS,
   extraerPrecios, validarPrecios, setPreciosInventarioParaPruebas,
   comentarioEsConsulta, payloadAIntent, normalize,
   buscarEnInventario,

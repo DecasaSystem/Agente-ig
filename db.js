@@ -68,6 +68,10 @@ async function runMigrations() {
     // Marca de "un asesor humano está escribiendo ahora mismo", detectado por los ecos de
     // Instagram sin pasar por el panel (ver marcarAsesorHumano).
     try { await pool.query('ALTER TABLE estado_usuario ADD COLUMN asesor_humano JSON') } catch { /* ya existe */ }
+    // Memoria del cliente: lo que se recuerda de él entre conversaciones y el resumen de lo
+    // hablado cuando la conversación se hace larga.
+    try { await pool.query('ALTER TABLE estado_usuario ADD COLUMN perfil JSON') } catch { /* ya existe */ }
+    try { await pool.query('ALTER TABLE estado_usuario ADD COLUMN resumen_conversacion JSON') } catch { /* ya existe */ }
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ig_conversaciones (
@@ -181,6 +185,26 @@ async function runMigrations() {
         proximo_envio DATETIME NOT NULL,
         created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_proximo (proximo_envio)
+      )
+    `)
+
+    // Seguimientos: mensajes que el agente envía por iniciativa propia (recordatorio de
+    // cita, carrito abandonado). La clave única (psid, tipo, referencia) garantiza que un
+    // mismo seguimiento no se envíe dos veces aunque se programe de más.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ig_seguimientos (
+        id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        psid            VARCHAR(50) NOT NULL,
+        tipo            VARCHAR(40) NOT NULL,
+        referencia      VARCHAR(60) NULL,
+        datos           JSON,
+        programado_para DATETIME NOT NULL,
+        estado          ENUM('pendiente','enviado','descartado') DEFAULT 'pendiente',
+        posposiciones   INT DEFAULT 0,
+        motivo          VARCHAR(120),
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_seguimiento (psid, tipo, referencia),
+        INDEX idx_pendientes (estado, programado_para)
       )
     `)
 
@@ -697,6 +721,111 @@ async function registrarMid(mid) {
   }
 }
 
+// ── Memoria del cliente (perfil y resumen) ────────────────────────────────────
+
+function parseJSON(valor) {
+  if (!valor) return null
+  if (typeof valor === 'object') return valor
+  try { return JSON.parse(valor) } catch { return null }
+}
+
+async function getPerfil(psid) {
+  const estado = await getEstado(psid)
+  return parseJSON(estado?.perfil)
+}
+
+async function setPerfil(psid, perfil) {
+  await setEstado(psid, { perfil: JSON.stringify(perfil) })
+}
+
+async function getResumenConversacion(psid) {
+  const estado = await getEstado(psid)
+  return parseJSON(estado?.resumen_conversacion)
+}
+
+async function setResumenConversacion(psid, resumen) {
+  await setEstado(psid, { resumen_conversacion: JSON.stringify(resumen) })
+}
+
+// ── Seguimientos (mensajes por iniciativa del agente) ─────────────────────────
+
+// Si ya había uno igual pendiente se deja el que estaba: el cliente no debe recibir dos
+// veces lo mismo porque el flujo pasara dos veces por aquí.
+async function programarSeguimiento({ destinatario, tipo, referencia = null, cuando, datos = {} }) {
+  const [res] = await pool.query(
+    `INSERT INTO ig_seguimientos (psid, tipo, referencia, datos, programado_para, estado, posposiciones)
+     VALUES (?, ?, ?, ?, ?, 'pendiente', 0)
+     ON DUPLICATE KEY UPDATE
+       datos           = IF(estado = 'pendiente', datos, VALUES(datos)),
+       programado_para = IF(estado = 'pendiente', programado_para, VALUES(programado_para)),
+       estado          = IF(estado = 'pendiente', estado, 'pendiente'),
+       posposiciones   = IF(estado = 'pendiente', posposiciones, 0)`,
+    [String(destinatario), tipo, referencia, JSON.stringify(datos), new Date(cuando)]
+  )
+  return res.affectedRows > 0
+}
+
+async function getSeguimientosPendientes(limite = 20) {
+  const [rows] = await pool.query(
+    `SELECT id, psid AS destinatario, tipo, referencia, datos, posposiciones
+     FROM ig_seguimientos
+     WHERE estado = 'pendiente' AND programado_para <= NOW()
+     ORDER BY programado_para ASC LIMIT ?`,
+    [limite]
+  )
+  return rows
+}
+
+async function marcarSeguimiento(id, estado, motivo = null) {
+  await pool.query(
+    'UPDATE ig_seguimientos SET estado = ?, motivo = ? WHERE id = ?',
+    [estado, motivo ? String(motivo).substring(0, 120) : null, id]
+  )
+}
+
+async function posponerSeguimiento(id, minutos) {
+  await pool.query(
+    `UPDATE ig_seguimientos
+     SET programado_para = DATE_ADD(NOW(), INTERVAL ? MINUTE), posposiciones = posposiciones + 1
+     WHERE id = ?`,
+    [minutos, id]
+  )
+}
+
+async function cancelarSeguimientos({ destinatario, tipo = null, referencia = null }) {
+  const condiciones = ['psid = ?', "estado = 'pendiente'"]
+  const valores = [String(destinatario)]
+  if (tipo)       { condiciones.push('tipo = ?');       valores.push(tipo) }
+  if (referencia) { condiciones.push('referencia = ?'); valores.push(String(referencia)) }
+  const [res] = await pool.query(
+    `UPDATE ig_seguimientos SET estado = 'descartado', motivo = 'cancelado' WHERE ${condiciones.join(' AND ')}`,
+    valores
+  )
+  return res.affectedRows
+}
+
+// ── Señales de vida (las usa core/vigilancia.js) ──────────────────────────────
+
+// Conversaciones iniciadas en las últimas N horas. Si esto es 0 en pleno horario de
+// atención, algo se rompió sin avisar (webhook desuscrito, token caducado...).
+async function contarConversacionesRecientes(horas = 2) {
+  const [rows] = await pool.query(
+    "SELECT COUNT(*) AS n FROM ig_eventos WHERE tipo = 'conversacion' AND created_at >= NOW() - INTERVAL ? HOUR",
+    [horas]
+  )
+  return rows[0]?.n ?? 0
+}
+
+// Notificaciones al sistema de ventas que llevan varios intentos sin entregarse: son
+// pedidos, citas y solicitudes de asesor que el equipo no está viendo.
+async function contarNotificacionesAtascadas(minIntentos = 3) {
+  const [rows] = await pool.query(
+    'SELECT COUNT(*) AS n FROM ig_notificaciones_pendientes WHERE intentos >= ?',
+    [minIntentos]
+  )
+  return rows[0]?.n ?? 0
+}
+
 async function limpiarMidsAntiguos(dias = 2) {
   const [res] = await pool.query(
     'DELETE FROM ig_mids_procesados WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)', [dias]
@@ -871,6 +1000,17 @@ module.exports = {
   getCitasRecientes,
   registrarMid,
   limpiarMidsAntiguos,
+  getPerfil,
+  setPerfil,
+  getResumenConversacion,
+  setResumenConversacion,
+  programarSeguimiento,
+  getSeguimientosPendientes,
+  marcarSeguimiento,
+  posponerSeguimiento,
+  cancelarSeguimientos,
+  contarConversacionesRecientes,
+  contarNotificacionesAtascadas,
   registrarComentario,
   registrarEvento,
   getMetricas,

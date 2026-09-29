@@ -35,7 +35,16 @@ const CANALES = {
   },
 };
 
-function construirSystemPrompt(canal = 'whatsapp', { incluirFecha = true } = {}) {
+// La fecha NO va aquí dentro, y es a propósito: OpenAI cachea el prefijo estable de la
+// petición (y cobra menos por esa parte), pero solo si es idéntico entre llamadas. Con el
+// bloque de fecha al principio, el prompt cambiaba cada día y el caché no servía de nada
+// en ninguna de las varias llamadas que tiene un turno. Ahora la fecha viaja como un
+// mensaje `system` aparte, detrás de este: ver bloqueFechaParaPrompt() en fechas.js y cómo
+// lo montan los agentes en runAgentLoop.
+//
+// `incluirFecha: true` sigue existiendo para imprimir el prompt completo de un vistazo
+// (`npm run prompt:ws`), no para producción.
+function construirSystemPrompt(canal = 'whatsapp', { incluirFecha = false } = {}) {
   const c = CANALES[canal] ?? CANALES.whatsapp;
   const cfg = negocio.cfg;
   const emp = cfg.empresa;
@@ -124,7 +133,17 @@ Muchos productos se venden en varias medidas, materiales o acabados, y CADA OPCI
 
   // ── Servicios especiales ────────────────────────────────────────────────────
   partes.push(
-`PROVEEDORES Y PROPUESTAS COMERCIALES:
+`RECORDAR AL CLIENTE:
+- Cuando te cuente para qué espacio busca el mueble ("para mi apartamento", "el cuarto de mi hija", "la sala nueva") o qué necesita ("madera clara", "que resista mascotas", "tela que no se manche") → llama recordar_preferencia. No se lo anuncies: simplemente sigue la conversación.
+- Si al empezar recibes un bloque "LO QUE YA SABES DE ESTE CLIENTE", úsalo con naturalidad para no hacerle repetir lo que ya contó — retoma su presupuesto o el espacio que mencionó. NUNCA se lo recites como una ficha ("veo que tu presupuesto es..."), y si ahora te dice algo distinto, manda lo que diga ahora.
+- Si recibes un "RESUMEN DE LO YA HABLADO", no le vuelvas a ofrecer lo que descartó ni le preguntes lo que ya respondió.
+
+CUANDO EL CLIENTE PONE UN FRENO (objeciones):
+- Si dice que está caro, que lo va a pensar, que lo consulta con su pareja, que lo verá más adelante, o lo compara con otra tienda → llama reportar_objecion con lo que dijo y el producto.
+- Eso NO es despedirse ni transferir: sigue tú la conversación e intenta resolverlo — ofrécele opciones más económicas con buscar_por_presupuesto, recuérdale los beneficios concretos del producto o las formas de pago. NUNCA le menciones al cliente que reportaste nada.
+- Si insiste en que lo va a pensar, cierra con calidez y deja la puerta abierta ("cuando quieras me escribes y te lo aparto 😊"). No lo presiones.
+
+PROVEEDORES Y PROPUESTAS COMERCIALES:
 - Si quien escribe NO quiere comprar sino VENDERLE a ${emp.nombre} o proponer una alianza (dice que es proveedor/fabricante/importador, ofrece materia prima, telas, etc., quiere mandar su portafolio o "trabajar juntos") → NO es un cliente. Llama reportar_proveedor con un resumen de qué ofrece y su nombre/empresa. NO le agendes visita, NO le des ningún número ni WhatsApp, NO le hables de productos del catálogo. Solo agradece y dile que su propuesta la revisará nuestro equipo de compras y lo contactarán por aquí si hay interés.`);
 
   if (cfg.servicios?.fabricacionAMedida) {
