@@ -35,7 +35,19 @@ const TIPOS = {
   CITA_24H: 'cita_24h',
   CITA_2H: 'cita_2h',
   CARRITO_ABANDONADO: 'carrito_abandonado',
+  INTERES_PENDIENTE: 'interes_pendiente',
 };
+
+// Horas por defecto de los seguimientos comerciales. MENOS de 24 a propósito: la ventana
+// para escribir libremente se cierra a las 24 h del último mensaje del cliente, y con 24
+// exactas el recordatorio llegaba justo cuando ya no se podía enviar (se descartaba como
+// fuera_de_ventana casi siempre: justo los clientes que no volvieron, que son para los
+// que existe).
+const HORAS_POR_DEFECTO = 20;
+function horasConfiguradas(clave) {
+  const h = Number(negocio.cfg.seguimientos?.[clave]);
+  return h > 0 && h < 24 ? h : HORAS_POR_DEFECTO;
+}
 
 // Rellena los huecos de la plantilla. Un dato que falte se sustituye por vacío, nunca por
 // "undefined": el cliente no debe ver un placeholder roto.
@@ -215,13 +227,30 @@ function datosDiaLegible(fechaIso) {
 
 // Al quedar un carrito sin confirmar: un único mensaje pasadas N horas. Si el cliente no
 // responde, no se insiste más.
-async function programarCarritoAbandonado(deps, { destinatario, producto, nombre, horas = 24 }) {
+async function programarCarritoAbandonado(deps, { destinatario, producto, nombre, horas = horasConfiguradas('horasCarrito') }) {
   return programar(deps, {
     destinatario,
     tipo: TIPOS.CARRITO_ABANDONADO,
-    referencia: null,
+    // Fija y no NULL: con NULL el índice único no frenaba los repetidos (ver db.js).
+    referencia: 'carrito',
     cuando: new Date(Date.now() + horas * 60 * 60 * 1000),
     datos: { producto, nombre },
+  });
+}
+
+// El cliente puso un freno ("lo voy a pensar", "está caro", "lo consulto") y se fue sin
+// carrito, pedido ni cita: una sola vez, al día siguiente, Elena retoma la conversación.
+// Si tiene carrito, ya lo cubre el de carrito abandonado y no se programa este. Se cancela
+// cuando el motivo desaparece (agrega al carrito, confirma, agenda o pasa a un asesor).
+async function programarInteresPendiente(deps, { destinatario, producto, nombre, tieneCarrito = false, horas = horasConfiguradas('horasInteresPendiente') }) {
+  if (tieneCarrito) return false;
+  return programar(deps, {
+    destinatario,
+    tipo: TIPOS.INTERES_PENDIENTE,
+    referencia: 'interes',
+    cuando: new Date(Date.now() + horas * 60 * 60 * 1000),
+    // Sin producto concreto la plantilla tiene que seguir leyéndose bien.
+    datos: { producto: producto || 'lo que estabas buscando', nombre },
   });
 }
 
@@ -229,6 +258,7 @@ module.exports = {
   TIPOS,
   construirMensaje, motivoParaNoEnviar,
   programar, cancelar, procesarPendientes, iniciarWorker,
-  programarRecordatoriosCita, programarCarritoAbandonado,
+  programarRecordatoriosCita, programarCarritoAbandonado, programarInteresPendiente,
+  HORAS_POR_DEFECTO,
   VENTANA_MENSAJERIA_MIN, POSPONER_MIN, MAX_POSPOSICIONES,
 };

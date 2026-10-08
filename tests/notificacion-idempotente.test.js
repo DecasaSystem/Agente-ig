@@ -25,6 +25,7 @@ beforeEach(() => {
     return { status: 201 }
   }
   db.getHistorial = async () => []
+  db.getPerfil = async () => null
   db.encolarNotificacion = async (psid, tipo, payload) => { encolado = { id: 1, psid, tipo, intentos: 1, payload } }
   db.eliminarNotificacion = async () => {}
   db.reprogramarNotificacion = async () => {}

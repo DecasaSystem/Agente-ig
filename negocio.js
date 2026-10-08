@@ -115,6 +115,19 @@ function formatearMoneda(valor) {
   return '$' + Number(valor || 0).toLocaleString(cfg.empresa.localeMoneda || 'es-CO');
 }
 
+// ── Descuento por pago en efectivo o transferencia ──────────────────────────
+// El porcentaje que la asesora puede ofrecer sola (5 %, dueño 2026-10-08). Más que eso lo
+// decide un asesor humano. La cifra la calcula SIEMPRE el código: si el modelo hiciera la
+// cuenta, podría equivocarse y el cliente se quedaría con un precio prometido que no existe.
+const porcentajeDescuentoEfectivo = Number(cfg.pagos?.descuentos?.porcentaje) > 0
+  ? Number(cfg.pagos.descuentos.porcentaje) : 0;
+
+function conDescuentoEfectivo(valor) {
+  const n = Number(valor);
+  if (!porcentajeDescuentoEfectivo || !Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * (100 - porcentajeDescuentoEfectivo) / 100);
+}
+
 // ── Operación ─────────────────────────────────────────────────────────────────
 
 const op = cfg.operacion ?? {};
@@ -152,6 +165,8 @@ module.exports = {
   maxPedidosDiarios:          op.maxPedidosDiarios ?? 3,
   minutosSilencioAsesor:      op.minutosSilencioAsesor ?? 60,
   topeGastoDiarioUsd:         op.topeGastoDiarioUsd ?? 0,
+  // Pagos
+  porcentajeDescuentoEfectivo, conDescuentoEfectivo,
   // Utilidades
   formatearMoneda,
 };

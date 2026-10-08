@@ -29,6 +29,7 @@ const { construirSystemPrompt } = require('./prompt')
 const vigilancia = require('./vigilancia')
 const seguimientos = require('./seguimientos')
 const memoria = require('./memoria')
+const contacto = require('./contacto')
 const log = require('./log')
 const { conReintentos } = reintentos
 const visionCatalogo = require('./vision-catalogo')
@@ -452,6 +453,15 @@ function buildSystemPrompt() {
   return construirSystemPrompt('instagram')
 }
 
+// Datos de contacto que se piden antes de pasar al cliente con una persona (transferencia
+// y pedido). En Instagram no hay teléfono del chat: si no lo da, el asesor no tiene a
+// dónde llamarlo. Ver contacto.js.
+const PARAMS_CONTACTO = {
+  nombre:            { type: 'string', description: 'Nombre de la persona, tal como lo dijo (sin "me llamo")' },
+  telefono_contacto: { type: 'string', description: 'Celular que dio el cliente para que el asesor lo contacte' },
+  cliente_no_quiso_dar_datos: { type: 'boolean', description: 'true SOLO si se los pediste y el cliente no quiso darlos' },
+}
+
 const TOOLS = [
   {
     name: 'buscar_productos',
@@ -530,12 +540,13 @@ const TOOLS = [
   },
   {
     name: 'solicitar_asesor',
-    description: 'Transfiere la conversación a un asesor humano.',
+    description: 'Transfiere la conversación a un asesor humano. Antes necesitas su nombre y un celular de contacto (ver DATOS ANTES DE TRANSFERIR).',
     parameters: {
       type: 'object',
       properties: {
         motivo: { type: 'string' },
         tipo:   { type: 'string', enum: ['asesor', 'pedido', 'cita', 'personalizacion'] },
+        ...PARAMS_CONTACTO,
       },
       required: ['motivo', 'tipo'],
     },
@@ -582,6 +593,7 @@ const TOOLS = [
       properties: {
         ciudad:     { type: 'string', description: 'Ciudad o municipio de entrega, si el cliente la dijo (decide si el envío es gratis). Omítelo si no la dio.' },
         forma_pago: { type: 'string', description: 'Cómo quiere pagar, si lo dijo: efectivo, transferencia, tarjeta o ADDI (decide si aplica el descuento). Omítelo si no lo dijo.' },
+        ...PARAMS_CONTACTO,
       }
     },
   },
@@ -1080,6 +1092,12 @@ function buscarProductoExacto(consulta) {
 function formatProducto(p) {
   const info = infoPrecioVariantes(p)
   const pesos = n => `$${Number(n ?? 0).toLocaleString('es-CO')}`
+  // Lo que paga con el descuento por efectivo/transferencia (5 %, negocio.json). Lo calcula
+  // el código para que Elena solo repita la cifra, nunca la invente.
+  const efectivo = n => {
+    const v = negocio.conDescuentoEfectivo(Number(n))
+    return v ? ` (pagando en efectivo o transferencia: ${pesos(v)})` : ''
+  }
   let linea
   if (info.precio_requiere_asesor) {
     // Varios tipos de variante con precio: el sistema suma lo elegido en cada uno y esa
@@ -1087,9 +1105,9 @@ function formatProducto(p) {
     // la ficha salía con "hasta $undefined".
     linea = `Precio: desde ${pesos(info.precio_desde)} (depende de la combinación de ${info.tipos_de_variante.join(' y ')})\nOpciones: ${info.variantes.map(v => `${v.tipo}: ${v.opcion}`).join(' | ')}\n[${info.nota_variantes}]`
   } else if (info.precio === null) {
-    linea = `Precio: desde ${pesos(info.precio_desde)} hasta ${pesos(info.precio_hasta)} (según la opción)\nOpciones: ${info.variantes.map(v => `${v.opcion} → ${pesos(v.precio)}`).join(' | ')}\n[No des un precio único: pregúntale cuál opción quiere y dale el precio de esa]`
+    linea = `Precio: desde ${pesos(info.precio_desde)} hasta ${pesos(info.precio_hasta)} (según la opción)\nOpciones: ${info.variantes.map(v => `${v.opcion} → ${pesos(v.precio)}${efectivo(v.precio)}`).join(' | ')}\n[No des un precio único: pregúntale cuál opción quiere y dale el precio de esa]`
   } else {
-    linea = `Precio: ${pesos(p.precio)}${info.opciones ? `\nDisponible en: ${info.opciones.join(', ')}` : ''}`
+    linea = `Precio: ${pesos(p.precio)}${efectivo(p.precio)}${info.opciones ? `\nDisponible en: ${info.opciones.join(', ')}` : ''}`
   }
   const juego = infoVentaPorJuego(p, Number(p.precio ?? 0))
   if (juego) linea += `\n[${juego.nota_juego}${juego.precio_pieza_suelta ? ` Pieza suelta: ${pesos(juego.precio_pieza_suelta)}.` : ''}${juego.piezas_por_opcion ? ` ${juego.piezas_por_opcion.join('; ')}.` : ''}]`
@@ -1126,6 +1144,34 @@ async function recordarMostrados(psid, productos) {
     // Lo mostrado queda en su perfil: si vuelve en unos días, el agente sabe por dónde iba.
     actualizarPerfil(psid, { productos_interes: productos.slice(0, 3).map(p => p.nombre) }).catch(() => {})
   } catch (e) { console.warn('[mostrados] no se pudo guardar:', e.message) }
+}
+
+// El cliente avanzó (carrito, pedido, cita, asesor): el "¿pudiste pensarlo?" de mañana ya
+// no tiene sentido.
+function cancelarInteresPendiente(psid) {
+  seguimientos.cancelar(depsSeguimientos(), { destinatario: psid, tipo: seguimientos.TIPOS.INTERES_PENDIENTE }).catch(() => {})
+}
+
+// Antes de pasar al cliente con una persona (transferencia o pedido) se necesitan su
+// nombre y un celular (dueño, 2026-10-08). Devuelve { contacto, perfil } o { respuesta }
+// con lo que hay que decirle a Elena si faltan datos. Lo conseguido queda en el perfil
+// para no volver a preguntarlo.
+async function resolverContactoParaAsesor(psid, args, herramienta) {
+  let perfil = null
+  try { perfil = await db.getPerfil(psid) } catch { /* sin perfil se pide todo */ }
+  const datos = contacto.resolverContacto({ canal: 'instagram', args, perfil })
+  if (datos.faltan.length && !datos.negado) {
+    evento(psid, 'contacto_pedido', datos.faltan.join(','))
+    return {
+      respuesta: `FALTAN DATOS (${datos.faltan.join(', ')}): ${contacto.instruccionPedirDatos({ canal: 'instagram', faltan: datos.faltan, herramienta })}`,
+    }
+  }
+  const cambios = {}
+  if (datos.nombre) cambios.nombre = datos.nombre
+  if (datos.telefono) cambios.telefono_contacto = datos.telefono
+  if (args.ciudad) cambios.ciudad = args.ciudad
+  if (Object.keys(cambios).length) await actualizarPerfil(psid, cambios)
+  return { contacto: datos, perfil: memoria.fusionarPerfil(perfil, cambios) }
 }
 
 async function ejecutarTool(psid, nombre, args, userInfo) {
@@ -1247,6 +1293,10 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         return 'No pude registrar la cita en este momento. Dile al cliente que un asesor lo contactará para confirmarla, y llama a solicitar_asesor.'
       }
       evento(psid, 'cita', `${sedeNombre} — ${diaTexto} ${horaTexto}`)
+      cancelarInteresPendiente(psid)
+      // El nombre de la cita queda en el perfil: si luego pide un asesor, no se le vuelve a
+      // preguntar (el celular sí, si no lo ha dado: en Instagram no lo tenemos).
+      await actualizarPerfil(psid, { nombre: args.nombre })
 
       // Recordatorios: el día antes y un par de horas antes. Es el seguimiento con menos
       // riesgo y más valor — el cliente PIDIÓ la cita — y reduce que no se presente.
@@ -1364,6 +1414,14 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         'asesor',
         { carrito: carritoObj.length ? carritoObj : undefined }
       )
+      // Si se va sin carrito, mañana Elena retoma la conversación una sola vez (dentro de la
+      // ventana de 24 h). Con carrito ya lo cubre el recordatorio de carrito abandonado.
+      seguimientos.programarInteresPendiente(depsSeguimientos(), {
+        destinatario: psid,
+        producto:     args.producto || null,
+        nombre:       userInfo?.nombre ?? null,
+        tieneCarrito: carritoObj.length > 0,
+      }).catch(e => console.warn('[seguimientos] interés pendiente no programado:', e.message))
       return 'Registrado para el equipo de ventas. NO le menciones esto al cliente ni te despidas: sigue atendiéndolo e intenta resolver la objeción tú misma (opciones más económicas con buscar_por_presupuesto, beneficios del producto, formas de pago).'
     }
 
@@ -1381,10 +1439,19 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'solicitar_asesor': {
+      // Nombre y celular primero: en Instagram no hay teléfono, y sin él el asesor no
+      // tiene cómo contactar al cliente fuera del chat.
+      const resuelto = await resolverContactoParaAsesor(psid, args, 'solicitar_asesor')
+      if (resuelto.respuesta) return resuelto.respuesta
+      const datosContacto = resuelto.contacto
+      const extraContacto = { contacto: contacto.payloadContacto(datosContacto, resuelto.perfil) }
+      cancelarInteresPendiente(psid)
       // Adjuntar contexto del estado aunque Elena no lo haya incluido en motivo
       const ultimoProdIG = await db.getUltimoProducto(psid)
       const carritoIG    = await getCarrito(psid)
       let motivoFinal = args.motivo || 'Solicitud de asesor'
+      const lineaContactoIG = contacto.lineaContacto(datosContacto)
+      if (lineaContactoIG) motivoFinal = `${lineaContactoIG}\n${motivoFinal}`
       if (ultimoProdIG?.nombre && !motivoFinal.includes(ultimoProdIG.nombre)) {
         motivoFinal += `\nÚltimo producto visto: ${ultimoProdIG.nombre}`
       }
@@ -1404,7 +1471,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         const yaPendiente = await db.solicitudAsesorPendiente(psid)
         if (!yaPendiente) {
           evento(psid, 'transferencia', `${args.tipo} (fuera de horario)`)
-          notificarRedes(psid, userInfo, motivoFinal, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined })
+          notificarRedes(psid, userInfo, motivoFinal, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined, ...extraContacto })
         }
         return `FUERA DE HORARIO: ${yaPendiente ? 'la solicitud de asesor de este cliente ya estaba registrada' : 'la solicitud quedó registrada'} y un asesor le escribirá ${horario.proximaApertura} (horario: ${negocio.horarioTexto}). Díselo al cliente con calidez y deja claro que MIENTRAS TANTO tú sigues aquí para ayudarle con lo que necesite (productos, precios, fotos, medidas, carrito). NO te despidas ni dejes de atenderlo, y NO vuelvas a llamar solicitar_asesor por este mismo motivo.`
       }
@@ -1417,13 +1484,13 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
 
       notificarRedes(
         psid, userInfo, motivoFinal, args.tipo,
-        { carrito: carritoIG.length ? carritoIG : undefined },
+        { carrito: carritoIG.length ? carritoIG : undefined, ...extraContacto },
         // Si ni siquiera se pudo encolar, no dejemos al cliente hablando solo con nadie:
         // se reactiva la IA para que al menos siga atendiéndolo.
         { alFallar: () => db.marcarTransferido(psid, false) }
       )
 
-      return 'Confírmale al cliente que lo estás conectando con un asesor que lo atenderá pronto 😊.'
+      return `Confírmale al cliente${datosContacto.nombre ? ` (${datosContacto.nombre})` : ''} que lo estás conectando con un asesor que lo atenderá pronto${datosContacto.telefono ? ' y que también puede contactarlo al número que dejó' : ''} 😊.`
     }
 
     case 'consultar_estado': {
@@ -1458,7 +1525,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // Antes esto notificaba a Redes: mirar el carrito no es pedir ayuda humana, y
       // cada vistazo creaba una tarjeta "pendiente" nueva para el equipo de ventas.
       // El pedido de verdad se notifica en confirmar_pedido; la ayuda, en solicitar_asesor.
-      return `🛍️ *Tu carrito:*\n${lista}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\n¿Confirmamos la compra o quieres seguir viendo productos?`
+      const totalEfectivoIG = negocio.conDescuentoEfectivo(total)
+      const lineaEfectivoIG = totalEfectivoIG ? `\n*Pagando en efectivo o transferencia (${negocio.porcentajeDescuentoEfectivo}% de descuento): $${totalEfectivoIG.toLocaleString('es-CO')}*` : ''
+      return `🛍️ *Tu carrito:*\n${lista}\n\n*Total: $${total.toLocaleString('es-CO')}*${lineaEfectivoIG}\n\n¿Confirmamos la compra o quieres seguir viendo productos?`
     }
 
     case 'agregar_al_carrito': {
@@ -1523,8 +1592,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       carrito.push({ producto: nombreCarrito, precio: precioFinal, cantidad: args.cantidad ?? 1 })
       await setCarrito(psid, carrito)
 
-      // Si no vuelve, se le escribe UNA vez a las 24 h (y solo si sigue dentro de la
-      // ventana de mensajería de Instagram).
+      // Si no vuelve, se le escribe UNA vez al día siguiente (20 h: dentro de la ventana
+      // de mensajería de Instagram). El "¿pudiste pensarlo?" queda sobrando.
+      cancelarInteresPendiente(psid)
       seguimientos.programarCarritoAbandonado(depsSeguimientos(), {
         destinatario: psid,
         producto:     nombreCarrito,
@@ -1574,6 +1644,10 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         alertar('Cliente de Instagram superó el tope de pedidos diarios', `psid=${psid}: intentó confirmar otro pedido. No se creó tarjeta; revisar la conversación.`)
         return '[NO registrado] ' + "Este cliente ya confirmó varios pedidos en las últimas 24 horas. NO se registró uno nuevo. Dile con amabilidad que un asesor lo va a contactar para revisar todo su pedido junto, y no vuelvas a llamar confirmar_pedido."
       }
+      // El pedido lo cierra un asesor: necesita saber a quién llamar (igual que al transferir).
+      const resueltoPedido = await resolverContactoParaAsesor(psid, args ?? {}, 'confirmar_pedido')
+      if (resueltoPedido.respuesta) return resueltoPedido.respuesta
+      const contactoPedido = resueltoPedido.contacto
       const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
       const resumen = carrito.map((i, idx) =>
         `${idx + 1}. ${i.producto} × ${i.cantidad || 1} — $${parsearPrecio(i.precio).toLocaleString('es-CO')}`
@@ -1590,20 +1664,31 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       evento(psid, 'pedido', `${total.toLocaleString('es-CO')}`)
       // El carrito ya es un pedido: recordárselo sería absurdo.
       seguimientos.cancelar(depsSeguimientos(), { destinatario: psid, tipo: seguimientos.TIPOS.CARRITO_ABANDONADO }).catch(() => {})
+      cancelarInteresPendiente(psid)
 
+      // Si dijo que paga en efectivo o transferencia, el total con el descuento (lo calcula
+      // el código) va en el mensaje y en la tarjeta: el asesor ve lo que se le prometió.
+      const pagaConDescuento = /efectivo|transfer|consignaci|nequi|daviplata/i.test(String((args ?? {}).forma_pago ?? ''))
+      const totalEfectivo = pagaConDescuento ? negocio.conDescuentoEfectivo(total) : null
+      const lineaEfectivo = totalEfectivo ? `Con ${negocio.porcentajeDescuentoEfectivo}% de descuento por pago en efectivo/transferencia: $${totalEfectivo.toLocaleString('es-CO')}` : null
       // Ciudad y forma de pago, si las dio: el asesor sabe de una vez si el envío es gratis
       // y si aplica el descuento (efectivo/transferencia).
-      const datosCierre = [(args ?? {}).ciudad && `Entrega en: ${String((args ?? {}).ciudad).slice(0, 80)}`, (args ?? {}).forma_pago && `Pago: ${String((args ?? {}).forma_pago).slice(0, 40)}`].filter(Boolean).join(' · ')
+      const datosCierre = [
+        contacto.lineaContacto(contactoPedido),
+        [(args ?? {}).ciudad && `Entrega en: ${String((args ?? {}).ciudad).slice(0, 80)}`, (args ?? {}).forma_pago && `Pago: ${String((args ?? {}).forma_pago).slice(0, 40)}`].filter(Boolean).join(' · '),
+        lineaEfectivo,
+      ].filter(Boolean).join('\n')
       notificarRedes(
         psid, userInfo,
         `PEDIDO CONFIRMADO:\n${resumen}\nTotal: $${total.toLocaleString('es-CO')}` + (datosCierre ? `\n${datosCierre}` : ''),
         'pedido',
-        { carrito }
+        { carrito, contacto: contacto.payloadContacto(contactoPedido, resueltoPedido.perfil, { ciudad: (args ?? {}).ciudad, forma_pago: (args ?? {}).forma_pago }) }
       )
       await setCarrito(psid, [])
       const avisoPedido = avisoFueraHorario()
+      const lineaEfectivoCliente = totalEfectivo ? `\n*Pagando en efectivo o transferencia (${negocio.porcentajeDescuentoEfectivo}% de descuento): $${totalEfectivo.toLocaleString('es-CO')}*` : ''
       await enviarTextoIA(psid,
-        `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*\n\nUn asesor de ${negocio.nombreEmpresa} te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir ${negocio.nombreEmpresa}! 😊${avisoPedido ? `\n\n${avisoPedido}` : ''}`
+        `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*${lineaEfectivoCliente}\n\nUn asesor de ${negocio.nombreEmpresa} te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir ${negocio.nombreEmpresa}! 😊${avisoPedido ? `\n\n${avisoPedido}` : ''}`
       )
       return `[Confirmación de pedido enviada al cliente con el resumen completo. Solo despídete con una frase corta, sin repetir el resumen.]`
     }
@@ -1655,6 +1740,25 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
       ...(extra.datos_cita && { datos_cita: extra.datos_cita }),
       ...(extra.tienda_id  && { tienda_id:  extra.tienda_id }),
     }
+
+    // Lo que se sabe del cliente viaja en `contacto`: con eso el sistema de ventas arma su
+    // ficha en Clientes → Redes (nombre, celular, @usuario). Si quien llama no lo armó
+    // (citas, objeciones, avisos automáticos), sale del perfil guardado. Un sistema de
+    // ventas viejo lo ignora.
+    let datosContacto = extra.contacto ?? null
+    if (!datosContacto) {
+      try {
+        const perfil = await db.getPerfil(psid)
+        datosContacto = contacto.payloadContacto(
+          { nombre: contacto.limpiarNombre(perfil?.nombre), telefono: contacto.normalizarTelefono(perfil?.telefono_contacto) },
+          perfil,
+          { ciudad: perfil?.ciudad },
+        )
+      } catch { /* sin perfil, la tarjeta sale igual */ }
+    }
+    if (userInfo?.username) datosContacto = { ...(datosContacto ?? {}), usuario_red: `@${userInfo.username}` }
+    if (datosContacto) payload.contacto = datosContacto
+    if (datosContacto?.nombre) payload.nombre_cliente = datosContacto.nombre
     const config = {
       headers: { 'Content-Type': 'application/json', 'X-Agent-Token': apiToken ?? '' },
       timeout: 25000,

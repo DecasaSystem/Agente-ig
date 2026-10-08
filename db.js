@@ -864,17 +864,21 @@ async function setResumenConversacion(psid, resumen) {
 
 // ── Seguimientos (mensajes por iniciativa del agente) ─────────────────────────
 
-// Si ya había uno igual pendiente se deja el que estaba: el cliente no debe recibir dos
-// veces lo mismo porque el flujo pasara dos veces por aquí.
+// Programa un seguimiento. Uno solo por (cliente, tipo, referencia): si ya había uno
+// pendiente, se ACTUALIZA con los datos y la hora nuevos en vez de crear otro. Así el
+// carrito abandonado habla del último producto que agregó, no del primero (antes se
+// conservaba el viejo). Si el anterior ya se envió o se descartó, este lo reemplaza.
+// La referencia nunca debe ser NULL para los de "uno por cliente" (carrito, interés): en
+// MySQL dos NULL no chocan en un índice único y cada llamada creaba una fila nueva.
 async function programarSeguimiento({ destinatario, tipo, referencia = null, cuando, datos = {} }) {
   const [res] = await pool.query(
     `INSERT INTO ig_seguimientos (psid, tipo, referencia, datos, programado_para, estado, posposiciones)
      VALUES (?, ?, ?, ?, ?, 'pendiente', 0)
      ON DUPLICATE KEY UPDATE
-       datos           = IF(estado = 'pendiente', datos, VALUES(datos)),
-       programado_para = IF(estado = 'pendiente', programado_para, VALUES(programado_para)),
-       estado          = IF(estado = 'pendiente', estado, 'pendiente'),
-       posposiciones   = IF(estado = 'pendiente', posposiciones, 0)`,
+       posposiciones   = IF(estado = 'pendiente', posposiciones, 0),
+       datos           = VALUES(datos),
+       programado_para = VALUES(programado_para),
+       estado          = 'pendiente'`,
     [String(destinatario), tipo, referencia, JSON.stringify(datos), new Date(cuando)]
   )
   return res.affectedRows > 0

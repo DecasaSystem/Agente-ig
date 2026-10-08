@@ -429,10 +429,12 @@ test('solicitar_asesor fuera de horario: crea la tarjeta pero NO silencia a la I
   const originales = {
     getUltimoProducto: db.getUltimoProducto, getEstado: db.getEstado,
     marcarTransferido: db.marcarTransferido, solicitudAsesorPendiente: db.solicitudAsesorPendiente,
-    registrarEvento: db.registrarEvento,
+    registrarEvento: db.registrarEvento, getPerfil: db.getPerfil, setPerfil: db.setPerfil,
   }
   const RealDate = Date
   let transferido = null
+  db.getPerfil = async () => null
+  db.setPerfil = async () => {}
   db.getUltimoProducto = async () => null
   db.getEstado = async () => ({ carrito: '[]' })
   db.marcarTransferido = async (_psid, valor) => { transferido = valor }
@@ -444,7 +446,7 @@ test('solicitar_asesor fuera de horario: crea la tarjeta pero NO silencia a la I
     static now() { return new RealDate('2026-09-15T22:30:00Z').getTime() }
   }
   try {
-    const salida = await agente.ejecutarTool('psid-noche', 'solicitar_asesor', { motivo: 'quiere envío a Cali', tipo: 'asesor' }, {})
+    const salida = await agente.ejecutarTool('psid-noche', 'solicitar_asesor', { motivo: 'quiere envío a Cali', tipo: 'asesor', nombre: 'Laura', telefono_contacto: '3001112233' }, {})
     assert.equal(transferido, null, 'no debe marcar transferido fuera de horario')
     assert.match(salida, /FUERA DE HORARIO/)
     assert.match(salida, /mañana a partir de las 8am/)

@@ -35,7 +35,7 @@ const MAX_PRODUCTOS = 6;
 // ── Perfil ────────────────────────────────────────────────────────────────────
 
 function perfilVacio() {
-  return { nombre: null, presupuesto: null, espacio: null, preferencias: [], productos_interes: [], actualizado: null };
+  return { nombre: null, telefono_contacto: null, ciudad: null, presupuesto: null, espacio: null, preferencias: [], productos_interes: [], actualizado: null };
 }
 
 // Funde los datos nuevos con los que ya había. Lo nuevo manda, salvo que venga vacío: un
@@ -45,6 +45,10 @@ function fusionarPerfil(actual, cambios = {}) {
 
   if (cambios.nombre)      base.nombre = String(cambios.nombre).trim().substring(0, 60);
   if (cambios.espacio)     base.espacio = String(cambios.espacio).trim().substring(0, 80);
+  // El celular que dio para que lo contacte un asesor (ya normalizado por contacto.js) y su
+  // ciudad: con esto una segunda transferencia no le vuelve a pedir los datos.
+  if (cambios.telefono_contacto) base.telefono_contacto = String(cambios.telefono_contacto).trim().substring(0, 20);
+  if (cambios.ciudad)      base.ciudad = String(cambios.ciudad).trim().substring(0, 80);
   if (Number(cambios.presupuesto) > 0) base.presupuesto = Number(cambios.presupuesto);
 
   for (const lista of ['preferencias', 'productos_interes']) {
@@ -64,7 +68,7 @@ function fusionarPerfil(actual, cambios = {}) {
 
 function perfilTieneAlgo(perfil) {
   if (!perfil) return false;
-  return !!(perfil.nombre || perfil.presupuesto || perfil.espacio ||
+  return !!(perfil.nombre || perfil.telefono_contacto || perfil.ciudad || perfil.presupuesto || perfil.espacio ||
     perfil.preferencias?.length || perfil.productos_interes?.length);
 }
 
@@ -75,6 +79,8 @@ function construirContextoPerfil(perfil, { formatearMoneda } = {}) {
 
   const lineas = [];
   if (perfil.nombre)      lineas.push(`Se llama ${perfil.nombre}`);
+  if (perfil.telefono_contacto) lineas.push(`Celular que dejó para que lo contacten: ${perfil.telefono_contacto}`);
+  if (perfil.ciudad)      lineas.push(`Ciudad: ${perfil.ciudad}`);
   if (perfil.presupuesto) lineas.push(`Presupuesto que mencionó: ${formatearMoneda ? formatearMoneda(perfil.presupuesto) : perfil.presupuesto}`);
   if (perfil.espacio)     lineas.push(`Para: ${perfil.espacio}`);
   if (perfil.preferencias?.length)      lineas.push(`Le interesa: ${perfil.preferencias.join(', ')}`);

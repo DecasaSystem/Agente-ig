@@ -141,9 +141,12 @@
       "esElUnico": true
     },
     "descuentos": {
+      "_porcentaje": "Confirmado por el dueño el 2026-10-08: pagando en efectivo o transferencia hay 5 % de descuento, y el agente lo puede decir y usar para cerrar. Puede haber un poco más, pero eso lo decide un asesor humano: el agente nunca promete más del 5 %. La cifra con descuento la calcula el código (negocio.conDescuentoEfectivo), no el modelo.",
+      "porcentaje": 5,
+      "masLoDecideAsesor": true,
       "aplicanCon": "pago en efectivo o transferencia bancaria",
       "noAplicanCon": "tarjeta de crédito ni con ADDI",
-      "valorLoConfirmaAsesor": true
+      "valorLoConfirmaAsesor": false
     },
     "promocionVigente": null
   },
@@ -161,6 +164,19 @@
     "restauraciones": true,
     "notaVentaPorUnidad": "Sillas se venden por UNIDAD, separadas de las bases de comedor"
   },
+  "porQueNosotros": {
+    "_comentario": "Argumentos reales para que la asesora defienda el valor frente al precio o a la competencia sin inventar. Solo cosas que la empresa cumple siempre.",
+    "argumentos": [
+      "Somos fábrica: hacemos nuestros muebles en nuestro propio taller, sin intermediarios",
+      "Fabricamos a la medida: tamaño, color, tela o acabado que el cliente necesite",
+      "Lo que no esté en tienda lo fabricamos al mismo precio",
+      "También restauramos y retapizamos muebles",
+      "Envío gratis en Quindío y Risaralda (Pereira)",
+      "5 % de descuento pagando en efectivo o transferencia",
+      "Crédito con ADDI para pagar a cuotas",
+      "Tiendas físicas en Armenia y Pereira para verlos y probarlos en persona"
+    ]
+  },
   "disponibilidad": {
     "ocultarStockPorTienda": true,
     "respuestaStock": "¡Seguramente sí! 😊 En DeCasa manejamos buen stock y lo que no tengamos en tienda lo fabricamos al mismo precio desde nuestro taller. ¿Quieres que te comunique con un asesor para confirmar disponibilidad y coordinar?"
@@ -174,15 +190,20 @@
     "complementos": "sofá → mesa de centro; cama → colchón o mesa de noche; base de comedor → sillas (aclarando que se venden por separado); sillas → base de comedor"
   },
   "saludos": {
-    "whatsapp": "¡Hola! 👋 Soy Elena, tu asesora de DeCasa.\n\n🏠 Especialistas en muebles de madera Flor Morado (más de 200 productos)\n📍 Tiendas en Armenia y Pereira\n\n📦 Categorías: Sillas, Bases de Comedor, Camas, Mesas, Sofás, Colchones\n🕐 Horario: L-V 8am-5pm | Sábado 8am-12pm\n\n📸 ¿Nos compartes una foto o captura de lo que buscas? Si alcanzas a ver el nombre del producto, cuéntanoslo también así te ayudamos más rápido\n\n💬 ¿Qué mueble estás buscando hoy? 😊",
-    "instagram": "¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️ Si nos compartes una foto o captura, cuéntanos también el nombre del producto si lo alcanzas a ver 📸"
+    "whatsapp": "¡Hola! 👋 Soy Elena, tu asesora de DeCasa.\n\n🏠 Especialistas en muebles de madera Flor Morado (más de 200 productos)\n📍 Tiendas en Armenia y Pereira\n\n📦 Categorías: Sillas, Bases de Comedor, Camas, Mesas, Sofás, Colchones\n🕐 Horario: L-V 8am-5pm | Sábado 8am-12pm\n\n📸 ¿Nos compartes una foto o captura de lo que buscas? Si alcanzas a ver el nombre del producto, cuéntanoslo también así te ayudamos más rápido\n🙋 Y si en algún momento prefieres hablar con un asesor, solo dímelo\n\n💬 ¿Qué mueble estás buscando hoy? 😊",
+    "instagram": "¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️ Si nos compartes una foto o captura, cuéntanos también el nombre del producto si lo alcanzas a ver 📸 Y si prefieres hablar con un asesor, solo dímelo 🙋"
   },
   "seguimientos": {
     "_nota": "Mensajes que el agente envía por iniciativa propia. WhatsApp e Instagram solo permiten escribir libremente dentro de las 24 h desde el último mensaje del cliente: fuera de esa ventana el seguimiento se descarta (no se envía nada). Placeholders disponibles: {nombre} {producto} {dia} {hora} {sede}.",
     "activos": true,
     "cita_24h": "¡Hola{nombre}! 😊 Te recuerdo tu visita de mañana {dia} a las {hora} en {sede}. ¿Nos vemos? Si necesitas cambiarla, dime y la movemos sin problema 🙌",
     "cita_2h": "¡Hola{nombre}! Te esperamos hoy a las {hora} en {sede} 🛋️ Cualquier cosa me escribes por aquí 😊",
-    "carrito_abandonado": "¡Hola{nombre}! 😊 Vi que te quedó {producto} en el carrito. ¿Seguimos con eso? Te lo puedo apartar o resolverte cualquier duda 🙌"
+    "_horasCarrito": "A cuántas horas de agregar al carrito se le escribe si no volvió. Tiene que ser MENOS de 24: WhatsApp e Instagram cierran la ventana a las 24 h del último mensaje del cliente, y con 24 exactas el recordatorio llegaba siempre tarde y se descartaba.",
+    "horasCarrito": 20,
+    "carrito_abandonado": "¡Hola{nombre}! 😊 Te quedó {producto} en el carrito. ¿Seguimos con eso? Te resuelvo cualquier duda, te mando más fotos o, si prefieres, te paso con un asesor 🙌",
+    "_interes_pendiente": "Para el cliente que dijo 'lo voy a pensar' (o puso otro freno) y se fue sin carrito, pedido ni cita. Una sola vez, dentro de la ventana de 24 h.",
+    "horasInteresPendiente": 20,
+    "interes_pendiente": "¡Hola{nombre}! 😊 Ayer quedamos hablando de {producto}. ¿Pudiste pensarlo? Si te ayuda, te mando más fotos, te comparo opciones o te paso con un asesor. Pagando en efectivo o transferencia tienes 5 % de descuento 🙌"
   },
 
   "contactos": {
