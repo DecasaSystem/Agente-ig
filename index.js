@@ -7,6 +7,8 @@ const axios      = require('axios')
 const OpenAI = require('openai')
 
 const { alertar } = require('./alertas')
+const { describirFaltantes } = require('./contrato-bd')
+const { analizarVariantes, precioMinimoCombinado } = require('./precio-variantes')
 
 // Sin esto, una promesa rechazada sin manejar tumba el proceso en silencio y el bot
 // queda mudo hasta que alguien lo note.
@@ -24,6 +26,7 @@ const { construirSystemPrompt } = require('./prompt')
 const vigilancia = require('./vigilancia')
 const seguimientos = require('./seguimientos')
 const memoria = require('./memoria')
+const log = require('./log')
 const { conReintentos } = reintentos
 const visionCatalogo = require('./vision-catalogo')
 
@@ -178,16 +181,15 @@ async function identificarProductoPorImagen(buffer) {
   }
 }
 
-// ── Catálogos PDF desde tabla configuracion ───────────────────────────────────
+// ── Catálogos PDF desde la BD del sistema de ventas (herramientas → configuracion) ─
 let catalogosDB = {}
 async function cargarCatalogos() {
   try {
-    const rows = await db.getCatalogos()
-    catalogosDB = {}
-    for (const { clave, valor } of rows) {
-      catalogosDB[clave.replace('catalogo_', '')] = valor
-    }
-    console.log(`[catalogos] ${Object.keys(catalogosDB).length} catálogos cargados`)
+    const { fuente, catalogos } = await db.getCatalogos()
+    // Una carga vacía no borra la última buena: el bot no se queda sin catálogos por
+    // un fallo momentáneo.
+    if (Object.keys(catalogos).length > 0) catalogosDB = catalogos
+    console.log(`[catalogos] ${Object.keys(catalogos).length} catálogos cargados desde ${fuente}`)
   } catch (e) {
     console.error('[catalogos] Error cargando:', e.message)
   }
@@ -384,7 +386,7 @@ async function detectarAsesorHumano(psid, texto) {
 
   if (esPrimerMensaje) {
     evento(psid, 'asesor_humano_detectado')
-    console.log(`[asesor-humano] ${psid}: una persona entró en la conversación — la IA se calla`)
+    log.info('asesor_humano_detectado', { cliente: psid, nota: 'la IA se calla' })
   }
 }
 
@@ -705,7 +707,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   let transfiriendo = false
   const asesorTomoElChat = async (round) => {
     if (transfiriendo || !(await db.asesorAtendiendo(psid))) return false
-    console.log(`[transferido] ${psid}: un asesor tomó el chat a mitad del turno — se descarta la respuesta`)
+    log.info('respuesta_descartada', { cliente: psid, motivo: 'un asesor tomó el chat a mitad del turno' })
     logUsoTokens(psid, tokPrompt, tokCompletion, round, tokCacheados)
     return true
   }
@@ -897,15 +899,35 @@ function scoring(p, q, qWords) {
 // una de las medidas. Si todas cuestan igual (color, acabado), el precio es único y las
 // opciones son solo información que enriquece la respuesta.
 function infoPrecioVariantes(p) {
-  const variantes = (p.variantes || []).filter(v => v.etiqueta && v.precio > 0)
-  if (variantes.length === 0) return { precio: Number(p.precio ?? 0) }
+  // Qué opciones deciden el precio, con la regla del sistema de ventas (precio-variantes.js):
+  // los tipos cosméticos (color, tela) ya no se mezclan en el rango de precios.
+  const { dePrecio, cosmeticas, tiposDePrecio, combinaTipos } = analizarVariantes(p)
+  const otrasOpciones = cosmeticas.length ? { otras_opciones: cosmeticas.map(v => v.etiqueta) } : {}
 
-  const precios = [...new Set(variantes.map(v => v.precio))]
+  if (combinaTipos) {
+    return {
+      precio: null,
+      precio_desde: precioMinimoCombinado(p, Number(p.precio ?? 0)),
+      tipos_de_variante: tiposDePrecio,
+      variantes: dePrecio.map(v => ({ opcion: v.etiqueta, tipo: v.tipo, precio: v.precio })),
+      precio_requiere_asesor: true,
+      nota_variantes: 'El precio de este producto depende de la COMBINACIÓN de varias opciones (' + tiposDePrecio.join(' y ') + '). No calcules ni des un precio exacto: dile "desde X", cuéntale las opciones de cada una y ofrécele pasarlo con un asesor para cotizar la combinación que quiere.',
+      ...otrasOpciones,
+    }
+  }
+
+  if (dePrecio.length === 0) {
+    return cosmeticas.length
+      ? { precio: Number(p.precio ?? 0), opciones: cosmeticas.map(v => v.etiqueta), tipo_opcion: cosmeticas[0].tipo }
+      : { precio: Number(p.precio ?? 0) }
+  }
+
+  const precios = [...new Set(dePrecio.map(v => v.precio))]
   if (precios.length === 1) {
     return {
       precio: Number(p.precio ?? 0),
-      opciones: variantes.map(v => v.etiqueta),
-      tipo_opcion: variantes[0].tipo,
+      opciones: [...dePrecio, ...cosmeticas].map(v => v.etiqueta),
+      tipo_opcion: dePrecio[0].tipo,
     }
   }
 
@@ -913,24 +935,27 @@ function infoPrecioVariantes(p) {
     precio: null,
     precio_desde: Math.min(...precios),
     precio_hasta: Math.max(...precios),
-    tipo_variante: variantes[0].tipo,
-    variantes: variantes.map(v => ({ opcion: v.etiqueta, precio: v.precio })),
+    tipo_variante: dePrecio[0].tipo,
+    variantes: dePrecio.map(v => ({ opcion: v.etiqueta, precio: v.precio })),
     nota_variantes: 'Este producto tiene varias opciones con PRECIOS DISTINTOS. No des un precio único ni menciones solo el más bajo como si fuera el precio: dile el rango (desde X hasta Y), enumera las opciones disponibles y pregúntale cuál necesita. Cuando la elija, dale el precio exacto de ESA opción.',
+    ...otrasOpciones,
   }
 }
 
 // Precio con el que comparar contra el presupuesto del cliente: el más bajo al que
 // puede llevarse el producto.
 function precioMinimo(p) {
-  const variantes = (p.variantes || []).filter(v => v.precio > 0)
-  if (!variantes.length) return parsearPrecio(p.precio)
-  return Math.min(...variantes.map(v => v.precio))
+  const { dePrecio, combinaTipos } = analizarVariantes(p)
+  if (combinaTipos) return precioMinimoCombinado(p, Number(p.precio ?? 0))
+  if (!dePrecio.length) return parsearPrecio(p.precio)
+  return Math.min(...dePrecio.map(v => v.precio))
 }
 
 // Busca una variante por lo que escribió el cliente ("1.60", "6 pts", "flor morado").
 // Tolerante con la puntuación porque en la BD conviven "1,40", "1.40" y "160".
 function encontrarVariante(producto, textoVariante) {
-  const variantes = (producto?.variantes || []).filter(v => v.etiqueta && v.precio > 0)
+  // Solo entre las opciones que deciden el precio: elegir un color no fija el precio.
+  const variantes = analizarVariantes(producto).dePrecio
   if (!variantes.length || !textoVariante) return null
   const norm = s => normalize(String(s)).replace(/[.,\s]/g, '')
   const buscado = norm(textoVariante)
@@ -1173,7 +1198,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // Persistir ANTES de confirmarle al cliente. Si esto falla, no le decimos que la
       // cita quedó agendada.
       try {
-        await db.guardarCita(psid, datosCita)
+        const citaAgenteId = await db.guardarCita(psid, datosCita)
+        // Enlaza la cita del módulo Citas con esta, para cancelarla después por id.
+        datosCita.cita_agente_id = typeof citaAgenteId === 'number' ? citaAgenteId : null
       } catch (e) {
         alertar('No se pudo guardar la cita', `psid=${psid} ${e.message}`)
         return 'No pude registrar la cita en este momento. Dile al cliente que un asesor lo contactará para confirmarla, y llama a solicitar_asesor.'
@@ -1403,7 +1430,16 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         return `[NO agregado al carrito] No existe "${args.producto}" con ese nombre exacto en el inventario.${cercanos.length ? ` Los más parecidos son: ${cercanos.join(', ')}. Confirma con el cliente cuál quiere y vuelve a llamar agregar_al_carrito con el nombre EXACTO.` : ' Busca primero con buscar_productos.'}`
       }
       const nombreReal = prodInv.nombre
-      const variantesPrecio = (prodInv.variantes || []).filter(v => v.etiqueta && v.precio > 0)
+      // Con dos o más tipos de variante con precio, el sistema SUMA los precios de lo que
+      // se elija en cada uno: esa combinación la cotiza un asesor, no el agente (ver
+      // precio-variantes.js). Se registra para saber si el caso existe en el catálogo.
+      const analisisVar = analizarVariantes(prodInv)
+      if (analisisVar.combinaTipos) {
+        console.warn('[precio-combinado]', nombreReal, analisisVar.tiposDePrecio.join(' + '))
+        evento(psid, 'precio_combinado', nombreReal)
+        return '[NO agregado al carrito] ' + `El precio de "${nombreReal}" depende de la combinación de varias opciones (${analisisVar.tiposDePrecio.join(' y ')}) y el sistema de ventas lo calcula sumándolas. NO lo agregues ni des un precio exacto: dile el precio desde, cuéntale las opciones y ofrécele pasarlo con un asesor (transferir_asesor) para cotizar la combinación.`
+      }
+      const variantesPrecio = analisisVar.dePrecio
       const preciosDistintos = new Set(variantesPrecio.map(v => v.precio)).size > 1
 
       let etiquetaVariante = null
@@ -1554,6 +1590,9 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
       whatsapp_url:   contactoUrl,
       fuente:         'instagram',
       contacto_url:   contactoUrl,
+      // Identidad de ESTA notificación: el reintento (a los 6 s aquí abajo, o desde la
+      // cola horas después) manda la misma clave y el sistema de ventas no la duplica.
+      idempotencia:   extra.idempotencia || crypto.randomUUID(),
       ...(extra.carrito    && { carrito:    extra.carrito }),
       ...(extra.datos_cita && { datos_cita: extra.datos_cita }),
       ...(extra.tienda_id  && { tienda_id:  extra.tienda_id }),
@@ -1590,6 +1629,9 @@ async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor
 // eso para leer "voy a conectarte con un asesor". Si el envío directo falla, se ENCOLA
 // en BD para que el worker lo reintente con backoff, en vez de perderse.
 function notificarRedes(psid, userInfo, resumen, tipo, extra = {}, { alFallar } = {}) {
+  // La clave se fija ANTES del primer envío y viaja dentro de `extra`, que es lo que se
+  // guarda en la cola: así el reintento de mañana es la misma notificación, no otra.
+  extra = { ...extra, idempotencia: extra.idempotencia || crypto.randomUUID() }
   enviarNotificacionSistema(psid, userInfo, resumen, tipo, extra)
     .catch(async e => {
       console.warn(`[redes] envío directo falló (${tipo} psid=${psid}), encolando para reintento:`, e.message)
@@ -1706,7 +1748,14 @@ function esVisualizacion(texto) {
 
 // ── Manejador principal de mensajes ───────────────────────────────────────────
 
-async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false) {
+async function handleMessage(...args) {
+  // Todo lo que ocurra dentro de este turno queda etiquetado con el mismo id, el canal y el
+  // cliente (ver core/log.js): así se puede reconstruir qué pasó con una persona concreta
+  // aunque se estén atendiendo varias a la vez.
+  return log.conContexto({ canal: 'instagram', cliente: args[0] }, () => _handleMessage(...args))
+}
+
+async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false) {
   const userInfo = await getUserInfoCache(psid)
   await db.getOrCreateClienteByPsid(psid, userInfo.username, userInfo.nombre)
 
@@ -1759,7 +1808,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
         // Generar la visualización tarda bastante: si en ese rato un asesor tomó el
         // chat, no se le manda nada encima (el mismo criterio que en runAgentLoop).
         if (await db.asesorAtendiendo(psid)) {
-          console.log(`[transferido] ${psid}: un asesor tomó el chat durante la visualización — se descarta`)
+          log.info('respuesta_descartada', { motivo: 'un asesor tomó el chat durante la visualización' })
           await db.guardarMensaje(psid, 'user', '[imagen del cuarto]')
           return
         }
@@ -1880,7 +1929,7 @@ async function handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, stor
         const textoTranscrito = transcripcion.text?.trim()
         if (textoTranscrito) {
           mensajeAI = textoTranscrito
-          console.log(`[AUDIO→TEXTO] ${psid}: ${textoTranscrito}`)
+          log.info('audio_transcrito', { texto: textoTranscrito.substring(0, 120) })
         } else if (!mensajeAI.trim()) {
           await enviarTextoIA(psid, 'No pude entender el audio. ¿Podrías escribir tu consulta? 😊')
           return
@@ -2061,7 +2110,7 @@ app.post('/webhook/instagram', (req, res) => {
   }
 
   const body = req.body
-  console.log(`[webhook] object=${body.object} entries=${body.entry?.length ?? 0}`)
+  log.info('webhook', { object: body.object, entries: body.entry?.length ?? 0 })
   if (body.object !== 'instagram' && body.object !== 'page') return
 
   procesarEventos(body).catch(e => alertar('procesarEventos falló', e.message))
@@ -2122,7 +2171,7 @@ async function procesarEventos(body) {
       // ya contestados, y con más de una instancia no servía).
       const mid = event.message?.mid ?? event.postback?.mid
       if (mid && !(await db.registrarMid(mid))) {
-        console.log(`[webhook] mid duplicado ignorado: ${mid}`)
+        log.info('mid_duplicado', { cliente: psid, mid })
         continue
       }
 
@@ -2379,10 +2428,23 @@ function revisarSeguridad() {
 }
 
 // ── Inicio ────────────────────────────────────────────────────────────────────
+async function revisarContratoBD() {
+  const { faltantes, error } = await db.verificarContratoBD()
+  if (error) return console.warn('[contrato-bd] no se pudo verificar:', error)
+  if (faltantes.length === 0) return console.log('[contrato-bd] ✅ esquema del sistema de ventas compatible')
+  const detalle = describirFaltantes(faltantes)
+  console.error('[contrato-bd] ❌ faltan:', detalle)
+  alertar('El sistema de ventas cambió columnas que usa el agente', `Faltan: ${detalle}. Revisar la última migración de decasa-api y contrato-bd.js.`)
+}
+
 async function startServer() {
   revisarSeguridad()
   await db.runMigrations()
   await db.eliminarCatalogosDescuento()
+  // Contrato con el sistema de ventas (contrato-bd.js): si una migración de decasa-api
+  // renombró o quitó algo que el agente lee, se avisa al arrancar y no cuando un cliente
+  // reciba un precio o una foto equivocados.
+  await revisarContratoBD()
   const refrescarInventarioYHashes = async () => {
     await cargarInventario()
     await sincronizarHashesCatalogo()
@@ -2448,5 +2510,7 @@ module.exports = {
   estadoHorario, MARGEN_CIERRE_TRANSFERENCIA_MIN,
   // Detección de asesor humano por los ecos de Instagram
   registrarEnviadoPorIA, ecoEsDeLaIA, textoCoincideCon, detectarAsesorHumano, normalizarEco,
+  // Notificación al sistema de ventas (idempotencia entre el envío y la cola)
+  notificarRedes, procesarColaNotificaciones,
   setInventarioParaPruebas: (arr) => { inventario = arr },
 }

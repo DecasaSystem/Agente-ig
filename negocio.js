@@ -125,6 +125,7 @@ module.exports = {
   timeoutTransferidoMinutos:  op.timeoutTransferidoMinutos ?? 360,
   maxItemsCarrito:            op.maxItemsCarrito ?? 10,
   minutosSilencioAsesor:      op.minutosSilencioAsesor ?? 60,
+  topeGastoDiarioUsd:         op.topeGastoDiarioUsd ?? 0,
   // Utilidades
   formatearMoneda,
 };

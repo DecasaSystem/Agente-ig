@@ -184,6 +184,8 @@
     "timeoutTransferidoMinutos": 360,
     "maxItemsCarrito": 10,
     "_minutosSilencioAsesor": "Cuando se detecta que un asesor humano está escribiendo (Instagram), la IA se calla. Vuelve a atender si el asesor lleva estos minutos sin escribir y el cliente vuelve a preguntar. Si el asesor tomó el chat desde el panel, no hay tiempo límite: manda el botón Terminar.",
-    "minutosSilencioAsesor": 60
+    "minutosSilencioAsesor": 60,
+    "_topeGastoDiarioUsd": "Tope de gasto en el modelo por cliente y día. Al superarlo se transfiere a un asesor humano en vez de seguir respondiendo: protege de que un solo número queme el presupuesto (por error o a propósito). 0 lo desactiva.",
+    "topeGastoDiarioUsd": 1.5
   }
 }

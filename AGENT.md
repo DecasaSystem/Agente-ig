@@ -332,3 +332,10 @@ creada sola al arrancar. Evento de métricas: `asesor_humano_detectado`.
 - `core/memoria.js`: perfil del cliente (columna `perfil`) y resumen rodante de la
   conversación (columna `resumen_conversacion`). El presupuesto y los productos se capturan
   solos de las herramientas; el espacio y los gustos con `recordar_preferencia`.
+
+## Plan de mejoras — Fase 4 (operación)
+
+- `core/log.js`: logs con contexto de turno; `handleMessage` abre el contexto.
+- `core/migraciones.js` + tabla `esquema_migraciones`: los cambios NUEVOS van en la lista
+  `MIGRACIONES` de `db.js`; lo anterior sigue siendo idempotente.
+- El tope de gasto y el healthcheck ampliado están por ahora solo en WhatsApp.

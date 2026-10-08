@@ -65,3 +65,18 @@ test('conReintentos: repite lo transitorio y se rinde con lo demás', async () =
   }, { baseMs: 1 }))
   assert.equal(intentosFatal, 1) // no se reintenta un error propio
 })
+
+test('agregar_al_carrito: un producto con dos tipos de variante con precio lo cotiza un asesor', async () => {
+  // El sistema de ventas SUMA el precio de lo elegido en cada tipo; esa combinación no
+  // la arma el agente (precio-variantes.js): no entra al carrito con un precio inventado.
+  agente.setInventarioParaPruebas([
+    { nombre: 'BASE COMEDOR ROBLE', precio: 1500000, subcategoria: 'bases', imagen: 'x.png', variantes: [
+      { etiqueta: '1.60', precio: 2000000, tipo: 'Medidas', afectaPrecio: true, precioPropio: true },
+      { etiqueta: '6 pts', precio: 500000, tipo: 'Puestos', afectaPrecio: true, precioPropio: true },
+    ] },
+  ])
+  const salida = await agente.ejecutarTool('psid-combo', 'agregar_al_carrito', { producto: 'BASE COMEDOR ROBLE', variante: '1.60' }, {})
+  assert.match(salida, /^\[NO agregado al carrito\]/)
+  assert.match(salida, /asesor/)
+  agente.setInventarioParaPruebas(INVENTARIO)
+})
