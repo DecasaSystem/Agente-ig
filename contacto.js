@@ -88,7 +88,10 @@ function resolverContacto({ canal, args = {}, perfil = {}, telefonoCanal = null 
   if (!nombre) faltan.push('nombre');
   if (!telefono) faltan.push('telefono');
 
-  return { nombre, telefono, faltan, negado: args.cliente_no_quiso_dar_datos === true };
+  // Si en esta conversación ya dijo que no quería dar sus datos, no se le vuelven a pedir al
+  // transferir: preguntar dos veces lo mismo es lo que hace que el cliente se vaya.
+  const negado = args.cliente_no_quiso_dar_datos === true || perfil?.no_quiso_dar_datos === true;
+  return { nombre, telefono, faltan, negado };
 }
 
 // Texto para el modelo cuando faltan datos: pedirlos en UN mensaje natural, sin sonar a
@@ -124,13 +127,25 @@ function payloadContacto({ nombre, telefono, negado } = {}, perfil = {}, extra =
     espacio: perfil?.espacio || undefined,
     preferencias: perfil?.preferencias?.length ? perfil.preferencias.slice(0, 5) : undefined,
     productos_interes: perfil?.productos_interes?.length ? perfil.productos_interes.slice(0, 6) : undefined,
+    categorias_interes: perfil?.categorias_interes?.length ? perfil.categorias_interes.slice(0, 6) : undefined,
+    interes: perfil?.interes ? String(perfil.interes).slice(0, 300) : undefined,
     no_quiso_dar_datos: negado ? true : undefined,
   };
   for (const k of Object.keys(c)) if (c[k] === undefined) delete c[k];
   return Object.keys(c).length ? c : null;
 }
 
+// Todo lo que se sabe del cliente según su perfil, en la forma del campo `contacto`. Es lo
+// que se manda al sistema de ventas cada vez que se aprende algo (contacto o interés).
+function contactoDesdePerfil(perfil = {}, extra = {}) {
+  return payloadContacto(
+    { nombre: limpiarNombre(perfil?.nombre), telefono: normalizarTelefono(perfil?.telefono_contacto), negado: perfil?.no_quiso_dar_datos },
+    perfil,
+    { ciudad: perfil?.ciudad, ...extra },
+  );
+}
+
 module.exports = {
   normalizarTelefono, nombreValido, limpiarNombre,
-  resolverContacto, instruccionPedirDatos, lineaContacto, payloadContacto,
+  resolverContacto, instruccionPedirDatos, lineaContacto, payloadContacto, contactoDesdePerfil,
 };

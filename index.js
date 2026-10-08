@@ -618,14 +618,20 @@ const TOOLS = [
   },
   {
     name: 'recordar_preferencia',
-    description: 'Guarda lo que el cliente cuenta de sí mismo para no hacérselo repetir en otra conversación: para qué espacio busca el mueble ("apartamento pequeño", "cuarto de mi hija") y qué le gusta o necesita ("madera clara", "que resista mascotas"). Llámalo en cuanto lo diga, sin anunciárselo. NO guardes datos sensibles ni nada que no sirva para venderle mejor.',
+    description: 'Guarda lo que el cliente cuenta de sí mismo y lo que busca, para no hacérselo repetir y para que el asesor lo vea en la ficha del cliente: para qué espacio busca el mueble ("apartamento pequeño", "cuarto de mi hija"), qué le gusta o necesita ("madera clara", "que resista mascotas") y un resumen actualizado de lo que busca. Llámalo cada vez que aprendas algo nuevo, sin anunciárselo. NO guardes datos sensibles ni nada que no sirva para venderle mejor.',
     parameters: {
       type: 'object',
       properties: {
         espacio:      { type: 'string', description: 'Para qué espacio o persona busca el mueble' },
         preferencias: { type: 'array', items: { type: 'string' }, description: 'Gustos o necesidades concretas (material, color, resistencia)' },
+        interes:      { type: 'string', description: 'UNA frase con TODO lo que sabes de lo que busca, actualizada: qué mueble, medida, color/material, espacio, presupuesto, para cuándo. Ej: "Cama queen en madera clara para la habitación principal, máximo $3.000.000, la necesita este mes"' },
       },
     },
+  },
+  {
+    name: 'guardar_contacto',
+    description: 'Guarda el nombre y/o el celular del cliente en el sistema de ventas (Clientes → Redes) apenas te los dé, aunque no vaya a hablar con un asesor. No crea ninguna solicitud ni avisa a nadie. Si no quiere darlos, llámala con cliente_no_quiso_dar_datos=true para no volver a pedírselos.',
+    parameters: { type: 'object', properties: PARAMS_CONTACTO },
   },
   {
     name: 'reportar_objecion',
@@ -1375,7 +1381,12 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         ? 'Aquí puedes ver todos los modelos con fotos y precios actualizados 📖 — toca el enlace:'
         : 'Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:'
       await enviarTextoIA(psid, `${intro}\n${encontrado.url}`)
-      return `[Catálogo de ${encontrado.nombre} enviado exitosamente. El cliente ya recibió el enlace — haz seguimiento con una pregunta de cierre]`
+      // Lo que pidió ver es lo que le interesa: queda en su perfil y en su ficha.
+      if (args.categoria && args.categoria !== 'todos') {
+        await actualizarPerfil(psid, { categorias_interes: [String(args.categoria).trim().toLowerCase()] })
+        sincronizarClienteRed(psid, userInfo)
+      }
+      return `[Catálogo de ${encontrado.nombre} enviado exitosamente. El cliente ya recibió el enlace: NO lo repitas. Sigue con UNA pregunta para entender qué busca (espacio, medida, estilo o presupuesto)]`
     }
 
     case 'reportar_imagen_no_identificada': {
@@ -1395,8 +1406,33 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
     }
 
     case 'recordar_preferencia': {
-      await actualizarPerfil(psid, { espacio: args.espacio, preferencias: args.preferencias })
+      await actualizarPerfil(psid, { espacio: args.espacio, preferencias: args.preferencias, interes: args.interes })
+      // Si el cliente ya dejó nombre o celular, su ficha en el sistema se pone al día con lo
+      // que busca (sin datos de contacto no hay ficha que actualizar).
+      sincronizarClienteRed(psid, userInfo)
       return 'Anotado. NO se lo menciones al cliente: sigue la conversación con normalidad.'
+    }
+
+    case 'guardar_contacto': {
+      // Dueño (2026-10-08): el cliente queda en Clientes → Redes apenas da sus datos,
+      // aunque no pida asesor. Va al sistema sin crear tarjeta ni avisar a nadie.
+      if (args.cliente_no_quiso_dar_datos === true && !args.nombre && !args.telefono_contacto) {
+        await actualizarPerfil(psid, { no_quiso_dar_datos: true })
+        evento(psid, 'contacto_negado', '')
+        return 'Anotado: no se los vuelvas a pedir. Sigue atendiéndolo igual de bien.'
+      }
+      const datos = contacto.resolverContacto({ canal: 'instagram', args, perfil: null })
+      const cambios = {}
+      if (datos.nombre) cambios.nombre = datos.nombre
+      if (datos.telefono) cambios.telefono_contacto = datos.telefono
+      if (!Object.keys(cambios).length) {
+        return 'No reconocí un nombre ni un celular válido en lo que te dio. Si te dio un número, confírmalo amablemente con él (un celular colombiano tiene 10 dígitos y empieza por 3); si no, sigue la conversación sin insistir.'
+      }
+      await actualizarPerfil(psid, cambios)
+      evento(psid, 'contacto_guardado', Object.keys(cambios).join(','))
+      sincronizarClienteRed(psid, userInfo)
+      const telefonoMal = args.telefono_contacto && !datos.telefono
+      return `Guardado (${Object.keys(cambios).join(' y ')}). Agradécele${datos.nombre ? ` llamándolo por su nombre (${datos.nombre})` : ''} y sigue vendiendo; no lo conviertas en trámite.${telefonoMal ? ' Ojo: el número que dio no parece un celular válido; confírmalo con amabilidad.' : ''}`
     }
 
     case 'reportar_objecion': {
@@ -1703,6 +1739,37 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
 // Mapeo sede (1-5) → tienda_id en la BD (mismo orden que el seeder)
 // Sedes desde negocio.json (ver negocio.js): para otro cliente se edita ese archivo.
 const { SEDE_TIENDA_ID, SEDE_NOMBRE } = negocio
+
+// Pone al día la ficha del cliente en Clientes → Redes del sistema de ventas: nombre,
+// celular, @usuario y lo que busca. NO crea tarjeta ni avisa a nadie (eso es
+// notificarRedes). Solo sale si el cliente ya dio nombre o celular (dueño, 2026-10-08:
+// "que se guarden apenas da los datos"). Sin cola de reintentos a propósito: si falla, la
+// próxima sincronización o el aviso de la transferencia llevan los mismos datos.
+function sincronizarClienteRed(psid, userInfo) {
+  const apiUrl = process.env.DECASA_API_URL
+  if (!apiUrl) return Promise.resolve(false)
+  return (async () => {
+    const perfil = await db.getPerfil(psid)
+    if (!perfil?.nombre && !perfil?.telefono_contacto) return false
+    let datos = contacto.contactoDesdePerfil(perfil)
+    if (!datos) return false
+    if (userInfo?.username) datos = { ...datos, usuario_red: `@${userInfo.username}` }
+    const contactoUrl = userInfo?.username ? `https://ig.me/m/${userInfo.username}` : `https://ig.me/direct/t/${psid}`
+    await axios.post(`${apiUrl}/api/agentes/clientes-redes`, {
+      fuente: 'instagram',
+      telefono: `ig_${psid}`,
+      contacto: datos,
+      contacto_url: contactoUrl,
+    }, {
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Token': process.env.DECASA_AGENT_TOKEN ?? '' },
+      timeout: 15000,
+    })
+    return true
+  })().catch(e => {
+    console.warn(`[clientes-redes] no se pudo sincronizar ${psid}:`, e.response?.status ?? e.message)
+    return false
+  })
+}
 
 async function enviarNotificacionSistema(psid, userInfo, resumen, tipo = 'asesor', extra = {}) {
   const apiUrl   = process.env.DECASA_API_URL

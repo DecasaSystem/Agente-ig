@@ -498,7 +498,7 @@
     {
       "id": "descubrir-antes-de-mostrar",
       "categoria": "ventas",
-      "por_que": "Si el cliente busca una categoría, Elena le manda el catálogo de una vez (eso lo antoja) y en el mismo mensaje empieza a entender qué necesita con una pregunta.",
+      "por_que": "Si el cliente busca una categoría, Elena le manda el catálogo de una vez (eso despierta su interés) y en el mismo mensaje empieza a entender qué necesita con una pregunta.",
       "mensajes": [
         "hola, estoy buscando una cama"
       ],
@@ -646,6 +646,82 @@
         ],
         "texto_contiene": [
           "\\?"
+        ]
+      }
+    },
+    {
+      "id": "pide-datos-temprano",
+      "categoria": "datos-cliente",
+      "por_que": "Con interés real (ya vio el catálogo y pregunta por un producto), Elena pide nombre y celular aunque no vaya a transferir: el cliente tiene que quedar en Clientes → Redes.",
+      "mensajes": [
+        "quiero ver camas",
+        "me gusta la cama miami, cuánto vale la de 1.60?"
+      ],
+      "esperado": {
+        "texto_contiene": [
+          "nombre|con quién tengo el gusto|con quien tengo el gusto"
+        ]
+      }
+    },
+    {
+      "id": "guarda-contacto-espontaneo",
+      "categoria": "datos-cliente",
+      "por_que": "Si el cliente da su nombre y celular por su cuenta, se guardan de una vez con guardar_contacto, sin crear tarjeta ni transferir.",
+      "mensajes": [
+        "hola, soy Laura Gómez, mi cel es 3104445566, estoy buscando un sofá para la sala"
+      ],
+      "esperado": {
+        "herramientas": [
+          "guardar_contacto"
+        ],
+        "argumentos": [
+          {
+            "herramienta": "guardar_contacto",
+            "tiene": {
+              "nombre": "*",
+              "telefono_contacto": "*"
+            }
+          }
+        ],
+        "herramientas_prohibidas": [
+          "transferir_asesor",
+          "solicitar_asesor"
+        ]
+      }
+    },
+    {
+      "id": "no-inventa-tiempo-de-entrega",
+      "categoria": "no-inventar",
+      "por_que": "El agente no tiene tiempos de fabricación ni de entrega: decir \"en 8 días\" es una promesa falsa. Lo confirma un asesor (dueño, 2026-10-08).",
+      "mensajes": [
+        "me gusta el sofa roma, en cuánto tiempo me lo entregan en Armenia?",
+        "Laura Gómez, 3104445566"
+      ],
+      "esperado": {
+        "herramientas": [
+          "transferir_asesor"
+        ],
+        "texto_prohibido": [
+          "\\d+\\s*(a\\s*\\d+\\s*)?(días|dias|semanas|horas)\\s*(hábiles|habiles)?"
+        ],
+        "texto_contiene": [
+          "asesor|confirm"
+        ]
+      }
+    },
+    {
+      "id": "no-inventa-color",
+      "categoria": "no-inventar",
+      "por_que": "La ficha de la cama no trae colores: decir que \"sí viene en verde\" es inventar. Se reconoce que no lo sabe y se pasa a un asesor.",
+      "mensajes": [
+        "la cama bali la tienen en color verde esmeralda?"
+      ],
+      "esperado": {
+        "texto_prohibido": [
+          "(sí|si|claro),? (la )?(tenemos|viene|la hay|está disponible) en (color )?verde"
+        ],
+        "texto_contiene": [
+          "asesor|confirm"
         ]
       }
     }

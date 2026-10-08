@@ -31,11 +31,16 @@ const MENSAJES_ENTRE_RESUMENES = 6;
 // Máximo de preferencias y productos que se recuerdan, para no inflar el prompt.
 const MAX_PREFERENCIAS = 5;
 const MAX_PRODUCTOS = 6;
+const MAX_CATEGORIAS = 4;
 
 // ── Perfil ────────────────────────────────────────────────────────────────────
 
 function perfilVacio() {
-  return { nombre: null, telefono_contacto: null, ciudad: null, presupuesto: null, espacio: null, preferencias: [], productos_interes: [], actualizado: null };
+  return {
+    nombre: null, telefono_contacto: null, ciudad: null, presupuesto: null, espacio: null,
+    interes: null, preferencias: [], productos_interes: [], categorias_interes: [],
+    no_quiso_dar_datos: false, actualizado: null,
+  };
 }
 
 // Funde los datos nuevos con los que ya había. Lo nuevo manda, salvo que venga vacío: un
@@ -50,11 +55,17 @@ function fusionarPerfil(actual, cambios = {}) {
   if (cambios.telefono_contacto) base.telefono_contacto = String(cambios.telefono_contacto).trim().substring(0, 20);
   if (cambios.ciudad)      base.ciudad = String(cambios.ciudad).trim().substring(0, 80);
   if (Number(cambios.presupuesto) > 0) base.presupuesto = Number(cambios.presupuesto);
+  // Lo que busca, resumido por Elena y actualizado a medida que aprende (dueño, 2026-10-08:
+  // "que la IA lleve en qué está interesado"). Viaja a la ficha de Clientes → Redes.
+  if (cambios.interes)     base.interes = String(cambios.interes).trim().substring(0, 300);
+  // Si ya dijo que no quería dar sus datos, no se le vuelven a pedir (ni al transferir).
+  if (cambios.no_quiso_dar_datos === true) base.no_quiso_dar_datos = true;
+  if (cambios.nombre || cambios.telefono_contacto) base.no_quiso_dar_datos = false;
 
-  for (const lista of ['preferencias', 'productos_interes']) {
+  for (const lista of ['preferencias', 'productos_interes', 'categorias_interes']) {
     const nuevos = (cambios[lista] ?? []).map(v => String(v).trim()).filter(Boolean);
     if (!nuevos.length) continue;
-    const limite = lista === 'preferencias' ? MAX_PREFERENCIAS : MAX_PRODUCTOS;
+    const limite = lista === 'preferencias' ? MAX_PREFERENCIAS : lista === 'categorias_interes' ? MAX_CATEGORIAS : MAX_PRODUCTOS;
     // Sin duplicados (ignorando mayúsculas) y quedándose con los más recientes.
     const vistos = new Set();
     base[lista] = [...nuevos.reverse(), ...base[lista]]
@@ -69,7 +80,7 @@ function fusionarPerfil(actual, cambios = {}) {
 function perfilTieneAlgo(perfil) {
   if (!perfil) return false;
   return !!(perfil.nombre || perfil.telefono_contacto || perfil.ciudad || perfil.presupuesto || perfil.espacio ||
-    perfil.preferencias?.length || perfil.productos_interes?.length);
+    perfil.interes || perfil.no_quiso_dar_datos || perfil.preferencias?.length || perfil.productos_interes?.length || perfil.categorias_interes?.length);
 }
 
 // Bloque para el modelo con lo que ya se sabe del cliente. Devuelve null si no hay nada,
@@ -83,6 +94,9 @@ function construirContextoPerfil(perfil, { formatearMoneda } = {}) {
   if (perfil.ciudad)      lineas.push(`Ciudad: ${perfil.ciudad}`);
   if (perfil.presupuesto) lineas.push(`Presupuesto que mencionó: ${formatearMoneda ? formatearMoneda(perfil.presupuesto) : perfil.presupuesto}`);
   if (perfil.espacio)     lineas.push(`Para: ${perfil.espacio}`);
+  if (perfil.interes)     lineas.push(`Lo que busca: ${perfil.interes}`);
+  if (perfil.categorias_interes?.length) lineas.push(`Categorías que le interesan: ${perfil.categorias_interes.join(', ')}`);
+  if (perfil.no_quiso_dar_datos) lineas.push('No quiso dar su nombre ni su celular: NO se los vuelvas a pedir');
   if (perfil.preferencias?.length)      lineas.push(`Le interesa: ${perfil.preferencias.join(', ')}`);
   if (perfil.productos_interes?.length) lineas.push(`Productos que ya vio: ${perfil.productos_interes.join(', ')}`);
 
@@ -169,5 +183,5 @@ async function prepararHistorial(deps, destinatario, { openai, modeloRapido } = 
 module.exports = {
   perfilVacio, fusionarPerfil, perfilTieneAlgo, construirContextoPerfil,
   necesitaResumen, generarResumen, construirContextoResumen, prepararHistorial,
-  MENSAJES_LITERALES, UMBRAL_RESUMEN, MENSAJES_ENTRE_RESUMENES, MAX_PREFERENCIAS, MAX_PRODUCTOS,
+  MENSAJES_LITERALES, UMBRAL_RESUMEN, MENSAJES_ENTRE_RESUMENES, MAX_PREFERENCIAS, MAX_PRODUCTOS, MAX_CATEGORIAS,
 };

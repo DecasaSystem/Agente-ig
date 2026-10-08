@@ -122,3 +122,23 @@ test('la ficha del producto trae el precio pagando en efectivo', () => {
   const ficha = agente.formatProducto({ nombre: 'SOFÁ ROMA', precio: 3000000, medidas: '2.00', material: 'Tela' })
   assert.match(ficha, /Precio: \$3\.000\.000 \(pagando en efectivo o transferencia: \$2\.850\.000\)/)
 })
+
+test('guardar_contacto: apenas da sus datos queda en el sistema, con el @usuario y SIN tarjeta', async () => {
+  const salida = await agente.ejecutarTool('psid-1', 'guardar_contacto', { nombre: 'laura', telefono_contacto: '3104445566' }, { username: 'laura.g' })
+  await esperar()
+  assert.match(salida, /Guardado/)
+  assert.equal(enviados.filter(e => e.tipo).length, 0, 'no se crea tarjeta de Redes')
+  const s = enviados.find(e => e.fuente === 'instagram' && e.contacto && !e.tipo)
+  assert.equal(s.telefono, 'ig_psid-1')
+  assert.equal(s.contacto.nombre, 'Laura')
+  assert.equal(s.contacto.telefono, '+573104445566')
+  assert.equal(s.contacto.usuario_red, '@laura.g')
+})
+
+test('si no quiso dar sus datos, al transferir no se le vuelven a pedir', async () => {
+  await agente.ejecutarTool('psid-1', 'guardar_contacto', { cliente_no_quiso_dar_datos: true }, {})
+  const salida = await agente.ejecutarTool('psid-1', 'solicitar_asesor', { motivo: 'x', tipo: 'asesor' }, {})
+  await esperar()
+  assert.doesNotMatch(salida, /FALTAN DATOS/)
+  assert.equal(transferido, true)
+})
