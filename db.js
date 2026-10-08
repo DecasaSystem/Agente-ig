@@ -3,7 +3,6 @@ require('dotenv').config()
 const mysql = require('mysql2/promise')
 const negocio = require('./negocio')
 const { leerCatalogos } = require('./catalogos')
-const { verificarContrato } = require('./contrato-bd')
 
 const pool = mysql.createPool({
   host:               process.env.DB_HOST,
@@ -21,7 +20,24 @@ const igTel = psid => `ig_${psid}`
 
 // Cambios de esquema NUEVOS. Cada uno se aplica una sola vez y queda registrado con su fecha
 // (ver core/migraciones.js). Lo que ya existía abajo se queda como está: es idempotente.
-const MIGRACIONES = []
+const MIGRACIONES = [
+  // Gasto en el modelo por cliente y día, para el tope de gasto (igual que wa_gasto_diario
+  // del agente de WhatsApp). Los ids llevan "ig-" porque la tabla de migraciones es la
+  // misma para los dos agentes (comparten base de datos).
+  {
+    id: 'ig-2026-10-08-gasto-diario',
+    descripcion: 'tabla ig_gasto_diario para el tope de gasto por cliente',
+    sql: `CREATE TABLE IF NOT EXISTS ig_gasto_diario (
+      telefono       VARCHAR(50) NOT NULL,
+      dia            DATE NOT NULL,
+      usd            DECIMAL(10,5) DEFAULT 0,
+      tokens_entrada BIGINT DEFAULT 0,
+      tokens_salida  BIGINT DEFAULT 0,
+      turnos         INT DEFAULT 0,
+      PRIMARY KEY (telefono, dia)
+    )`,
+  },
+]
 
 async function runMigrations() {
   try {
@@ -501,16 +517,64 @@ async function limpiarHistorialAntiguo(dias = 90) {
 
 // ── Configuración / Catálogos ─────────────────────────────────────────────────
 
+// ── Gasto en el modelo (tope diario por cliente) ─────────────────────────────
+
+async function registrarGasto(psid, usd, tokensEntrada = 0, tokensSalida = 0) {
+  try {
+    await pool.query(
+      `INSERT INTO ig_gasto_diario (telefono, dia, usd, tokens_entrada, tokens_salida, turnos)
+       VALUES (?, CURDATE(), ?, ?, ?, 1)
+       ON DUPLICATE KEY UPDATE
+         usd = usd + VALUES(usd),
+         tokens_entrada = tokens_entrada + VALUES(tokens_entrada),
+         tokens_salida  = tokens_salida + VALUES(tokens_salida),
+         turnos = turnos + 1`,
+      [igTel(psid), Number(usd) || 0, tokensEntrada, tokensSalida]
+    )
+  } catch (e) {
+    console.warn('[gasto] no se pudo registrar:', e.message)
+  }
+}
+
+async function getGastoHoy(psid) {
+  try {
+    const [rows] = await pool.query(
+      'SELECT usd, turnos FROM ig_gasto_diario WHERE telefono = ? AND dia = CURDATE()',
+      [igTel(psid)]
+    )
+    return { usd: Number(rows[0]?.usd ?? 0), turnos: Number(rows[0]?.turnos ?? 0) }
+  } catch (e) {
+    // Ante un fallo de lectura se asume que no ha gastado: es peor dejar de atender a un
+    // cliente legítimo por un problema de base de datos.
+    console.warn('[gasto] no se pudo leer:', e.message)
+    return { usd: 0, turnos: 0 }
+  }
+}
+
+// Pedidos que confirmó el cliente en las últimas horas (eventos 'pedido'): sirve para el
+// tope de pedidos por día (negocio.json → operacion.maxPedidosDiarios).
+async function contarPedidosRecientes(psid, horas = 24) {
+  try {
+    const [rows] = await pool.query(
+      "SELECT COUNT(*) AS n FROM ig_eventos WHERE psid = ? AND tipo = 'pedido' AND created_at > NOW() - INTERVAL ? HOUR",
+      [psid, horas]
+    )
+    return Number(rows[0]?.n ?? 0)
+  } catch (e) {
+    // Ante la duda no se bloquea una venta.
+    console.warn('[pedidos] no se pudieron contar:', e.message)
+    return 0
+  }
+}
+
+async function limpiarGastoAntiguo(dias = 60) {
+  await pool.query('DELETE FROM ig_gasto_diario WHERE dia < CURDATE() - INTERVAL ? DAY', [dias])
+}
+
 // Primero `herramientas` (donde se editan desde el 2026-09-13) y si no, `configuracion`:
 // ver catalogos.js. Devuelve { fuente, catalogos } con las claves sin el prefijo.
 async function getCatalogos() {
   return leerCatalogos(pool)
-}
-
-// ¿Siguen existiendo las tablas y columnas del sistema de ventas que lee el agente?
-// Ver contrato-bd.js.
-async function verificarContratoBD() {
-  return verificarContrato(pool)
 }
 
 // La promoción del 20% (sofás/comedores) venció el 6 de julio de 2026. Se eliminan sus
@@ -570,7 +634,8 @@ async function getInventario() {
   let rows
   try {
     [rows] = await pool.query(
-      `SELECT id, nombre, precio_base AS precio, foto_url AS imagen, foto_url_2 AS imagen2, medidas, material, categoria AS subcategoria
+      `SELECT id, nombre, precio_base AS precio, foto_url AS imagen, foto_url_2 AS imagen2, medidas, material, categoria AS subcategoria,
+              descripcion, piezas_por_juego AS piezasPorJuego, precio_pieza AS precioPieza
        FROM productos WHERE activo = 1 ORDER BY categoria, nombre`
     )
   } catch {
@@ -651,6 +716,25 @@ async function getVariantesPorProducto() {
     // De menor a mayor precio: al cliente se le muestra "desde X" y así la lista queda
     // en el orden en que la va a leer.
     for (const lista of mapa.values()) lista.sort((a, b) => a.precio - b.precio)
+
+    // Piezas del juego por OPCIÓN (migración piezas_por_juego_por_opcion, 2026-10-08): una
+    // opción puede ser "juego de 6" aunque el producto sea de 4. Va en una consulta
+    // APARTE a propósito: si la columna no existe todavía, la de arriba —la de los
+    // precios— no puede caerse con ella.
+    try {
+      const [piezas] = await pool.query(`
+        SELECT cfg.producto_id, o.nombre AS etiqueta, cfg.piezas_por_juego AS piezas
+        FROM producto_variante_configs cfg
+        JOIN tipo_variante_opciones o ON o.id = cfg.opcion_id
+        WHERE cfg.piezas_por_juego > 1
+      `)
+      for (const p of piezas) {
+        const v = (mapa.get(p.producto_id) ?? []).find(x => x.etiqueta === String(p.etiqueta ?? '').trim())
+        if (v) v.piezasPorJuego = Number(p.piezas)
+      }
+    } catch {
+      // Sin la columna: cada opción usa las piezas del producto.
+    }
   } catch (e) {
     // Si las tablas de variantes no existen (BD antigua), se sigue con precio único.
     console.warn('[variantes] no se pudieron cargar:', e.message)
@@ -1054,7 +1138,8 @@ module.exports = {
   limpiarHistorialAntiguo,
   getInventario,
   getCatalogos,
-  verificarContratoBD,
+  pool,
+  registrarGasto, getGastoHoy, limpiarGastoAntiguo, contarPedidosRecientes,
   eliminarCatalogosDescuento,
   consultarStock,
   getHashesProductos,

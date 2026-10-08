@@ -25,6 +25,9 @@ const CANALES = {
     campoMotivo: 'razon',
     tieneCarrusel: false,
     notaCanal: null,
+    // Pedidos reales del sistema de ventas por el número desde el que escribe. En
+    // Instagram no hay teléfono: allá esas preguntas van a un asesor.
+    toolPedidos: 'consultar_pedidos',
   },
   instagram: {
     donde: 'Instagram Direct',
@@ -32,6 +35,7 @@ const CANALES = {
     campoMotivo: 'motivo',
     tieneCarrusel: true,
     notaCanal: 'No menciones WhatsApp ni teléfonos — estamos en Instagram',
+    toolPedidos: null,
   },
 };
 
@@ -66,7 +70,8 @@ SEDES (usa el número en agendar_cita):
 ${negocio.listaSedes({ indent: '' })}
 
 CATEGORÍAS DE PRODUCTOS:
-${negocio.categoriasParaPrompt()}`);
+${negocio.categoriasParaPrompt()}
+(La lista no es cerrada: el inventario puede tener más. Si el cliente pide algo que no ves aquí, búscalo con buscar_productos ANTES de decirle que no lo vendemos.)`);
 
   // ── Reglas de producto y precio ──────────────────────────────────────────────
   partes.push(
@@ -78,12 +83,12 @@ ${negocio.categoriasParaPrompt()}`);
 3. Cuando el cliente mencione un presupuesto o diga "barato/económico" → usa buscar_por_presupuesto
 4. Para ver carrito → llama ver_carrito
 5. Para fotos de productos → usa enviar_foto. En tu texto escribe algo como "Te envío la foto a continuación 👇" para que el cliente sepa que la imagen llega justo después (se envía como mensaje separado)${c.tieneCarrusel ? '\n5b. Para mostrar VARIAS opciones (2 o más) → usa enviar_carrusel con los nombres exactos (escribe "Mira estas opciones 👇" antes). Prefiérelo SIEMPRE sobre listar productos en texto. No mandes fotos sueltas una por una cuando son varias.' : ''}
-6. Para catálogos PDF → usa enviar_catalogo y muestra la URL tal cual (sin markdown), para que sea tappable
+6. Para catálogos → usa enviar_catalogo (sirve para cualquier categoría que se venda: manda el catálogo de Gestión o, si esa categoría no tiene, la página en línea con precios actualizados; sin categoría, "todos") y muestra la URL tal cual (sin markdown), para que sea tappable
 7. Para agendar visita → sigue el FLUJO DE AGENDAMIENTO de más abajo
 8. SOLO llama agregar_al_carrito cuando el cliente CONFIRME explícitamente que quiere comprar ese producto. "Me gusta", "me parece bien", "bonita", "qué chévere", "me gustó" NO son confirmaciones — pregunta primero "¿La agrego al carrito?" antes de llamar agregar_al_carrito. Solo agrega si el cliente dice cosas como "sí agrégala", "quiero comprarla", "ponla en el carrito", "sí la quiero".
 9. Si el cliente dice "quita X", "ya no quiero X", "elimina X", "borra X del carrito" → llama quitar_del_carrito con el nombre del producto
 10. Si quiere vaciar todo el carrito → llama quitar_del_carrito sin el campo producto
-11. Para finalizar la compra → llama confirmar_pedido (solo cuando el cliente confirme explícitamente)
+11. Para finalizar la compra → llama confirmar_pedido (solo cuando el cliente confirme explícitamente). Justo antes, en UN solo mensaje, pregúntale a qué ciudad se lo enviamos y cómo le gustaría pagar, y pásalos en ciudad y forma_pago: con eso el asesor sabe si el envío es gratis y si aplica el descuento, y lo cierra más rápido. Si no lo quiere decir, confirma igual sin esos datos
 NUNCA llames ${c.toolAsesor} cuando el cliente quiera comprar — usa siempre el flujo de carrito`);
 
   partes.push(
@@ -112,7 +117,8 @@ Muchos productos se venden en varias medidas, materiales o acabados, y CADA OPCI
 - Menciónalo proactivamente cuando el cliente muestre interés real: "${cfg.envios.argumento}"
 - Si el cliente dice que quiere ir a verlo ("quiero verlo", "voy a la tienda", "prefiero ir", "paso por allá") → invítalo a agendar una cita: "¡Perfecto! Para que te atendamos bien y tengamos el producto listo, agendemos tu visita 😊 ¿Cómo te llamas?" y sigue el flujo de agendar_cita
 - COSTO DE ENVÍO: GRATIS en ${(cfg.envios.zonasGratis ?? []).join(' y ')}. ${cfg.envios.notaFueraDeZona} — infórmalo y pregunta: "¿Quieres que te comunique con un asesor para que te dé el valor exacto del envío?" → solo transfiere si el cliente dice que sí
-- Para preguntas sobre tiempo de entrega, instalación o garantía → transfiere al asesor`);
+- Si pregunta por una compra que YA hizo (cómo va mi pedido, cuándo me llega, ya está listo) → ${c.toolPedidos ? `usa ${c.toolPedidos} y dile lo que devuelva. Solo se consulta el número desde el que escribe: si te da otro número, NO lo busques (es información de otra persona); ofrécele un asesor` : `transfiere al asesor`}
+- Para preguntas sobre tiempo de entrega de algo que aún no compra, instalación o garantía → transfiere al asesor`);
   }
 
   // ── Pagos y descuentos ──────────────────────────────────────────────────────

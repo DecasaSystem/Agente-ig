@@ -32,9 +32,11 @@
       "ultimaCita": 11
     },
     "domingoCerrado": true,
-    "texto": "Lunes-Viernes 8am-5pm | Sábado 8am-12pm",
-    "textoPublico": "🕐 Lunes a viernes 8am-5pm y sábados 8am-12pm (domingos cerrado)",
-    "margenCierreTransferenciaMin": 20
+    "texto": "Lunes-Viernes 8am-5pm | Sábado 8am-12pm | Domingos y festivos cerrado",
+    "textoPublico": "🕐 Lunes a viernes 8am-5pm y sábados 8am-12pm (domingos y festivos cerrado)",
+    "margenCierreTransferenciaMin": 20,
+    "_cerradoEnFestivos": "Las tiendas no abren en festivos de Colombia (confirmado por el dueño, 2026-10-08): el agente no agenda citas esos días y los marca en la lista de próximos días. Los festivos se calculan solos (fechas.js → festivosColombia).",
+    "cerradoEnFestivos": true
   },
   "sedes": [
     {
@@ -75,10 +77,12 @@
       "direccion": "Cra. 14 #11-93, Pereira, Risaralda",
       "corta": "Cra. 14 #11-93, Pereira",
       "nombre": "Decasa Circunvalar — Cra. 14 #11-93, Pereira",
-      "ciudad": "Pereira"
+      "ciudad": "Pereira",
+      "_activa": "Cerró el 2026-08-27 (tiendas.cerrada_en en el sistema de ventas). Se deja para nombrar las citas viejas; no se ofrece ni se aceptan citas nuevas.",
+      "activa": false
     }
   ],
-  "sedesPublico": "📍 Armenia: Av. Bolívar #16N-26 · Km 2 vía El Edén · Km 1 vía Jardines\n📍 Pereira: C.C. Unicentro · Cra. 14 #11-93",
+  "sedesPublico": "📍 Armenia: Av. Bolívar #16N-26 · Km 2 vía El Edén · Km 1 vía Jardines\n📍 Pereira: C.C. Unicentro",
   "categorias": {
     "camas": "Camas",
     "bases_comedores": "Comedores",
@@ -94,14 +98,23 @@
     "sofas_camas": "Sofás Cama",
     "cajoneros_bifes": "Cajoneros",
     "escritorios": "Escritorios",
-    "colchones": "Colchones"
+    "colchones": "Colchones",
+    "cunas": "Cunas",
+    "puff": "Puff",
+    "relojes": "Relojes"
+  },
+  "catalogoPublico": {
+    "_comentario": "Dirección de la app del sistema de ventas. Con ella el agente arma los enlaces de los catálogos visuales (/c/<slug>) y de las secciones del inventario (/catalogo/<categoría>) cuando una categoría no tiene PDF en Herramientas. Se puede cambiar con la variable CATALOGO_PUBLICO_URL.",
+    "urlBase": "https://sistema-de-ventas-olive.vercel.app"
   },
   "mapaCategoriasBD": {
     "comedores": "bases_comedores",
     "mesas_aux": "mesas_auxiliares",
     "sillas_aux": "sillas_auxiliares",
     "cajoneros": "cajoneros_bifes",
-    "sofa_camas": "sofas_camas"
+    "sofa_camas": "sofas_camas",
+    "Puff": "puff",
+    "Reloj": "relojes"
   },
   "terminosAmbiguos": [
     {
@@ -183,6 +196,8 @@
     "retencionHistorialDias": 90,
     "timeoutTransferidoMinutos": 360,
     "maxItemsCarrito": 10,
+    "_maxPedidosDiarios": "Pedidos que un mismo cliente puede confirmar con el agente en 24 h. Cada pedido avisa al celular de todo el equipo de Redes; por encima de esto (un abuso o un error del modelo) ya no se crean más tarjetas: se avisa por Telegram y se le dice al cliente que un asesor lo contactará. 0 lo desactiva.",
+    "maxPedidosDiarios": 3,
     "_minutosSilencioAsesor": "Cuando se detecta que un asesor humano está escribiendo (Instagram), la IA se calla. Vuelve a atender si el asesor lleva estos minutos sin escribir y el cliente vuelve a preguntar. Si el asesor tomó el chat desde el panel, no hay tiempo límite: manda el botón Terminar.",
     "minutosSilencioAsesor": 60,
     "_topeGastoDiarioUsd": "Tope de gasto en el modelo por cliente y día. Al superarlo se transfiere a un asesor humano en vez de seguir respondiendo: protege de que un solo número queme el presupuesto (por error o a propósito). 0 lo desactiva.",

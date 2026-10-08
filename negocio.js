@@ -48,6 +48,8 @@ const cfg = cargar();
 // Los datos de contacto pueden venir por entorno para no guardarlos en el repositorio.
 const comprasWhatsapp  = process.env.COMPRAS_WHATSAPP || cfg.contactos?.comprasWhatsapp || null;
 const emailPrivacidad  = process.env.CONTACTO_PRIVACIDAD_EMAIL || cfg.contactos?.emailPrivacidad || null;
+// App del sistema de ventas: de ahí salen los enlaces a sus catálogos públicos (catalogos.js).
+const urlCatalogoPublico = (process.env.CATALOGO_PUBLICO_URL || cfg.catalogoPublico?.urlBase || '').replace(/\/+$/, '') || null;
 
 // ── Sedes ─────────────────────────────────────────────────────────────────────
 
@@ -58,17 +60,37 @@ const SEDE_NOMBRE = Object.fromEntries(cfg.sedes.map(s => [s.id, s.nombre || s.d
 // { 1: 1 } — id de la tienda en la base de datos del sistema de ventas.
 const SEDE_TIENDA_ID = Object.fromEntries(cfg.sedes.map(s => [s.id, s.tiendaId ?? s.id]));
 
-const sedeMin = Math.min(...cfg.sedes.map(s => s.id));
-const sedeMax = Math.max(...cfg.sedes.map(s => s.id));
+// Una sede cerrada ("activa": false en negocio.json) se queda en la lista para poder
+// nombrar las citas viejas que tenía, pero no se ofrece ni se acepta para citas nuevas.
+// Circunvalar cerró el 2026-08-27 y el agente la seguía ofreciendo: el cliente podía
+// llegar a una tienda cerrada.
+//
+// Además, al arrancar el agente compara las sedes con la tabla `tiendas` del sistema de
+// ventas (contrato-bd.js → verificarSedes) y marca aquí las que allá estén cerradas, para
+// que el próximo cierre no dependa de que alguien se acuerde de editar este archivo.
+const sedesCerradasEnBD = new Set();
+const sedeAbierta = s => s.activa !== false && !sedesCerradasEnBD.has(s.id);
+const sedesAbiertas = () => cfg.sedes.filter(sedeAbierta);
+
+const sedeMin = Math.min(...cfg.sedes.filter(s => s.activa !== false).map(s => s.id));
+const sedeMax = Math.max(...cfg.sedes.filter(s => s.activa !== false).map(s => s.id));
 
 function sedeValida(n) {
-  return cfg.sedes.some(s => s.id === Number(n));
+  return sedesAbiertas().some(s => s.id === Number(n));
 }
 
-// Lista numerada de sedes para pedirle al cliente que elija.
+// Lo llama el agente con las sedes cuya tienda está cerrada en la BD del sistema.
+function marcarSedesCerradas(ids) {
+  sedesCerradasEnBD.clear();
+  for (const id of ids) sedesCerradasEnBD.add(Number(id));
+}
+
+// Lista numerada de sedes ABIERTAS para pedirle al cliente que elija. Usa solo lo que
+// dice negocio.json (no la BD): va dentro del prompt y tiene que ser estable para la caché.
 function listaSedes({ indent = '  ', emojiNumeros = false } = {}) {
   const numeros = ['0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣'];
   return cfg.sedes
+    .filter(s => s.activa !== false)
     .map(s => `${indent}${emojiNumeros ? (numeros[s.id] ?? `${s.id}.`) : `${s.id}.`} ${s.corta || s.direccion}`)
     .join('\n');
 }
@@ -106,9 +128,11 @@ module.exports = {
   zonaHoraria:   cfg.empresa.zonaHoraria,
   // Sedes
   UBICACIONES, SEDE_NOMBRE, SEDE_TIENDA_ID, sedeMin, sedeMax, sedeValida, listaSedes,
+  sedes: cfg.sedes, marcarSedesCerradas, sedesAbiertas,
   // Categorías
   CATEGORIAS, clavesCategorias, categoriasParaPrompt,
   mapaCategoriasBD: cfg.mapaCategoriasBD ?? {},
+  urlCatalogoPublico,
   // Textos
   saludo: canal => cfg.saludos?.[canal] ?? '',
   sedesPublico: cfg.sedesPublico ?? '',
@@ -118,12 +142,14 @@ module.exports = {
   comprasWhatsapp, emailPrivacidad,
   // Horario / operación
   horario: cfg.horario,
+  cerradoEnFestivos: cfg.horario.cerradoEnFestivos !== false,
   margenCierreTransferenciaMin: cfg.horario.margenCierreTransferenciaMin ?? 20,
   ventanaConversacionMinutos: op.ventanaConversacionMinutos ?? 45,
   timeoutCarritoHoras:        op.timeoutCarritoHoras ?? 72,
   retencionHistorialDias:     op.retencionHistorialDias ?? 90,
   timeoutTransferidoMinutos:  op.timeoutTransferidoMinutos ?? 360,
   maxItemsCarrito:            op.maxItemsCarrito ?? 10,
+  maxPedidosDiarios:          op.maxPedidosDiarios ?? 3,
   minutosSilencioAsesor:      op.minutosSilencioAsesor ?? 60,
   topeGastoDiarioUsd:         op.topeGastoDiarioUsd ?? 0,
   // Utilidades

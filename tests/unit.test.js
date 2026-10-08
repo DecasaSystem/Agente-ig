@@ -454,3 +454,23 @@ test('solicitar_asesor fuera de horario: crea la tarjeta pero NO silencia a la I
     Object.assign(db, originales)
   }
 })
+
+test('formatProducto: precio combinado y venta por juego, sin "undefined"', () => {
+  const combinado = agente.formatProducto({
+    nombre: 'BASE ROBLE', precio: 1500000, medidas: '1.60', material: 'Roble',
+    variantes: [
+      { etiqueta: '1.60', precio: 2000000, tipo: 'Medidas', afectaPrecio: true, precioPropio: true },
+      { etiqueta: '6 pts', precio: 500000, tipo: 'Puestos', afectaPrecio: true, precioPropio: true },
+    ],
+  })
+  assert.doesNotMatch(combinado, /undefined/)
+  assert.match(combinado, /combinación/)
+
+  const juego = agente.formatProducto({
+    nombre: 'MESA DE NOCHE LUNA', precio: 800000, medidas: '50x40', material: 'Flor Morado',
+    piezasPorJuego: 2, precioPieza: 450000, descripcion: 'Con cajón y patas torneadas', variantes: [],
+  })
+  assert.match(juego, /juego de 2/)
+  assert.match(juego, /Pieza suelta: \$450\.000/)
+  assert.match(juego, /Con cajón/)
+})

@@ -1,5 +1,9 @@
 # InstagramAgent — Elena, asesora virtual de DeCasa
 
+> **Vigente: `../AGENT.md` (AGENT.md de la raíz de `Agentes/`).** Este archivo queda como
+> historia de Instagram (arquitectura, hallazgos y fases). Si algo choca, manda el de la raíz.
+
+
 Agente conversacional que atiende los DM de **@muebles_decasa** en Instagram: responde dudas de producto, muestra fotos y catálogos, arma un carrito, agenda citas y transfiere a un asesor humano cuando hace falta.
 
 > Este documento reemplaza al anterior, que estaba desactualizado (describía Gemini y un `ai.js` que no existen). Aquí queda la arquitectura **real** al 9 de julio de 2026, los hallazgos del análisis y el plan para llevarlo a nivel profesional.
