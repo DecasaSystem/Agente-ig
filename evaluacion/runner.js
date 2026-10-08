@@ -17,20 +17,32 @@
 
 // Ejecuta un caso: recorre los turnos del cliente y registra qué herramientas pidió el
 // modelo y qué le respondió al cliente en cada uno.
-async function ejecutarCaso(caso, { openai, modelo, systemPrompt, tools, ejecutarHerramienta, maxRondas = 6 }) {
+// `notaPorTurno({ historial })` (opcional) devuelve un mensaje de sistema efímero para ese
+// turno, igual que los que agregan los agentes de verdad (p. ej. memoria.notaPedirDatos):
+// así la evaluación ve lo mismo que el modelo en producción.
+// `revisarRespuesta({ texto, herramientas, resultados })` (opcional) es la revisión antes de
+// enviar de los agentes (verificacion.js): si devuelve una corrección, la respuesta no cuenta
+// y el modelo la rehace, una vez por turno.
+async function ejecutarCaso(caso, { openai, modelo, systemPrompt, tools, ejecutarHerramienta, maxRondas = 6, notaPorTurno = null, revisarRespuesta = null }) {
   const mensajes = [{ role: 'system', content: systemPrompt }];
   const turnos = [];
 
   for (const textoCliente of caso.mensajes) {
+    const historial = mensajes.filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
+    const nota = notaPorTurno?.({ historial }) ?? null;
     mensajes.push({ role: 'user', content: textoCliente });
+    // La nota va detrás del prompt fijo y no queda en el historial (como en los agentes).
+    const conNota = () => (nota ? [mensajes[0], { role: 'system', content: nota }, ...mensajes.slice(1)] : mensajes);
 
     const herramientasLlamadas = [];
+    const resultadosTurno = [];
     let respuestaFinal = '';
+    let yaCorregida = false;
 
     for (let ronda = 0; ronda < maxRondas; ronda++) {
       const respuesta = await openai.chat.completions.create({
         model: modelo,
-        messages: mensajes,
+        messages: conNota(),
         tools,
         tool_choice: 'auto',
         temperature: 0.3,
@@ -41,7 +53,17 @@ async function ejecutarCaso(caso, { openai, modelo, systemPrompt, tools, ejecuta
       const llamadas = eleccion.message.tool_calls ?? [];
 
       if (!llamadas.length) {
-        respuestaFinal = eleccion.message.content ?? '';
+        const texto = eleccion.message.content ?? '';
+        const correccion = !yaCorregida && ronda < maxRondas - 1 && revisarRespuesta
+          ? revisarRespuesta({ texto, herramientas: herramientasLlamadas.map(h => h.nombre), resultados: resultadosTurno })
+          : null;
+        if (correccion) {
+          yaCorregida = true;
+          mensajes.push({ role: 'assistant', content: texto });
+          mensajes.push({ role: 'system', content: correccion });
+          continue;
+        }
+        respuestaFinal = texto;
         mensajes.push({ role: 'assistant', content: respuestaFinal });
         break;
       }
@@ -52,6 +74,7 @@ async function ejecutarCaso(caso, { openai, modelo, systemPrompt, tools, ejecuta
         try { args = JSON.parse(llamada.function.arguments); } catch { /* el modelo mandó basura */ }
         herramientasLlamadas.push({ nombre: llamada.function.name, args });
         const resultado = await ejecutarHerramienta(llamada.function.name, args);
+        resultadosTurno.push(resultado);
         mensajes.push({ role: 'tool', tool_call_id: llamada.id, content: typeof resultado === 'string' ? resultado : JSON.stringify(resultado) });
       }
     }
@@ -111,6 +134,8 @@ async function evaluarTodos(casos, opciones, alAvanzar) {
   const resultados = [];
 
   for (const caso of casos) {
+    // Cada caso empieza de cero (carrito, perfil simulados).
+    opciones.alEmpezarCaso?.(caso);
     try {
       const turnos = await ejecutarCaso(caso, opciones);
       const fallos = evaluarResultado(caso, turnos);

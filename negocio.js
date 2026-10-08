@@ -128,6 +128,15 @@ function conDescuentoEfectivo(valor) {
   return Math.round(n * (100 - porcentajeDescuentoEfectivo) / 100);
 }
 
+// Nota de venta que acompaña a los productos de ciertas categorías ("las sillas se venden
+// aparte" en las bases de comedor). Va en el resultado de la búsqueda, no solo en el prompt:
+// así el modelo la tiene delante justo cuando presenta el producto.
+function notaDeVenta(categoria) {
+  const nota = cfg.servicios?.notaVentaPorUnidad;
+  const en = cfg.servicios?.notaVentaPorUnidadEn ?? [];
+  return nota && en.includes(categoria) ? `${nota}: díselo al cliente en este mismo mensaje y ofrécele verlas.` : null;
+}
+
 // ── Operación ─────────────────────────────────────────────────────────────────
 
 const op = cfg.operacion ?? {};
@@ -167,6 +176,7 @@ module.exports = {
   topeGastoDiarioUsd:         op.topeGastoDiarioUsd ?? 0,
   // Pagos
   porcentajeDescuentoEfectivo, conDescuentoEfectivo,
+  notaDeVenta,
   // Utilidades
   formatearMoneda,
 };

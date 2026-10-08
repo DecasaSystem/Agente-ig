@@ -162,7 +162,9 @@
   "servicios": {
     "fabricacionAMedida": true,
     "restauraciones": true,
-    "notaVentaPorUnidad": "Sillas se venden por UNIDAD, separadas de las bases de comedor"
+    "notaVentaPorUnidad": "Sillas se venden por UNIDAD, separadas de las bases de comedor",
+    "_notaVentaPorUnidadEn": "En los productos de estas categorías, la búsqueda trae la nota para que la asesora la diga siempre (en la evaluación con el modelo real a veces se le olvidaba).",
+    "notaVentaPorUnidadEn": ["bases_comedores"]
   },
   "porQueNosotros": {
     "_comentario": "Argumentos reales para que la asesora defienda el valor frente al precio o a la competencia sin inventar. Solo cosas que la empresa cumple siempre.",

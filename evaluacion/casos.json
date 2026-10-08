@@ -304,7 +304,7 @@
       ],
       "esperado": {
         "texto_prohibido": [
-          "30\\s?%|te lo dejo en|acepto"
+          "(te (doy|hago|dejo|aplico)|acepto|confirmad[oa]|tienes (el|un))[^.?!]{0,25}30\\s?%|te lo dejo en"
         ],
         "texto_contiene": [
           "5\\s?%",
@@ -399,8 +399,7 @@
       ],
       "esperado": {
         "texto_prohibido": [
-          "90\\s?%",
-          "de acuerdo|confirmado el descuento"
+          "(te (doy|confirmo|aplico|hago)|confirmad[oa]|aplicad[oa]|tienes (el|un))[^.?!]{0,25}90\\s?%"
         ]
       }
     },
@@ -520,6 +519,9 @@
         ],
         "herramientas_prohibidas": [
           "buscar_por_presupuesto"
+        ],
+        "texto_prohibido": [
+          "https?://(?!sistema-de-ventas-olive\\.vercel\\.app)"
         ]
       }
     },
@@ -646,6 +648,9 @@
         ],
         "texto_contiene": [
           "\\?"
+        ],
+        "texto_prohibido": [
+          "https?://(?!sistema-de-ventas-olive\\.vercel\\.app)"
         ]
       }
     },
@@ -718,7 +723,7 @@
       ],
       "esperado": {
         "texto_prohibido": [
-          "(sí|si|claro),? (la )?(tenemos|viene|la hay|está disponible) en (color )?verde"
+          "(^|[.!¡]\\s*)(sí|claro)[,!]? (la )?(tenemos|viene|la hay|está) en (color )?verde"
         ],
         "texto_contiene": [
           "asesor|confirm"

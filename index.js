@@ -30,6 +30,7 @@ const vigilancia = require('./vigilancia')
 const seguimientos = require('./seguimientos')
 const memoria = require('./memoria')
 const contacto = require('./contacto')
+const { revisarRespuesta } = require('./verificacion')
 const log = require('./log')
 const { conReintentos } = reintentos
 const visionCatalogo = require('./vision-catalogo')
@@ -696,9 +697,12 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   )
 
   // Lo que ya se sabe del cliente y el resumen de lo hablado. Si algo falla, el turno sigue.
-  let contextoPerfil = null, contextoResumen = null
+  let contextoPerfil = null, contextoResumen = null, notaDatos = null
   try {
-    contextoPerfil = memoria.construirContextoPerfil(await db.getPerfil(psid), { formatearMoneda: n => `$${Number(n).toLocaleString('es-CO')}` })
+    const perfilTurno = await db.getPerfil(psid)
+    contextoPerfil = memoria.construirContextoPerfil(perfilTurno, { formatearMoneda: n => `${Number(n).toLocaleString('es-CO')}` })
+    // Pedir nombre y celular en el momento justo (ver memoria.notaPedirDatos).
+    notaDatos = memoria.notaPedirDatos({ perfil: perfilTurno, historial })
     contextoResumen = memoria.construirContextoResumen(await db.getResumenConversacion(psid))
   } catch (e) {
     console.warn('[memoria] no se pudo cargar el contexto del cliente:', e.message)
@@ -724,6 +728,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
     // Contexto efímero (p.ej. los productos recién mostrados) — no se guarda en el
     // historial, solo ayuda a resolver referencias en este turno.
     ...(contextoPerfil ? [{ role: 'system', content: contextoPerfil }] : []),
+    ...(notaDatos ? [{ role: 'system', content: notaDatos }] : []),
     ...(contextoResumen ? [{ role: 'system', content: contextoResumen }] : []),
     ...(contextoExtra ? [{ role: 'system', content: contextoExtra }] : []),
     ...historial.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
@@ -760,6 +765,12 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
 
   // 6 rondas, igual que el agente de WhatsApp: con 5 se quedaba corto en turnos que
   // encadenan búsqueda, foto y carrito.
+  // Para la revisión antes de enviar (verificacion.js): qué herramientas se llamaron en el
+  // turno y qué devolvieron. Una sola corrección por turno.
+  const herramientasTurno = []
+  const resultadosTurno = []
+  let yaCorregida = false
+
   for (let round = 0; round < 6; round++) {
     if (await asesorTomoElChat(round)) return null
     if (round > 0) await ig.sendTypingOn(psid)
@@ -791,7 +802,23 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       // momento más probable para que el asesor haya tomado el chat entre medias.
       if (await asesorTomoElChat(round + 1)) return null
       const texto = choice.message.content ?? ''
+      // Que no diga que hizo algo que no hizo, ni mande un enlace inventado: si pasa, la
+      // respuesta no sale y el modelo la corrige (una vez, y solo si quedan rondas).
+      const correccion = !yaCorregida && round < 5
+        ? revisarRespuesta({ texto, herramientas: herramientasTurno, resultados: resultadosTurno })
+        : null
+      if (correccion) {
+        yaCorregida = true
+        const motivoCorreccion = correccion.split('\n')[1] ?? ''
+        log.info('respuesta_corregida', { cliente: psid, motivo: motivoCorreccion.slice(0, 160) })
+        evento(psid, 'respuesta_corregida', motivoCorreccion.slice(0, 120))
+        messages.push({ role: 'assistant', content: texto })
+        messages.push({ role: 'system', content: correccion })
+        continue
+      }
       validarPrecios(psid, texto, preciosVistos)
+      // Si en esta respuesta le pidió los datos, no se los vuelve a pedir por su cuenta.
+      if (notaDatos && memoria.pidioDatos(texto)) actualizarPerfil(psid, { datos_pedidos: true }).catch(() => {})
       logUsoTokens(psid, tokPrompt, tokCompletion, round + 1, tokCacheados)
       return texto
     }
@@ -805,6 +832,8 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       if (nombre === 'solicitar_asesor') transfiriendo = true
       const result = await ejecutarTool(psid, nombre, args, userInfo)
       const resultStr = String(result ?? 'OK')
+      herramientasTurno.push(nombre)
+      resultadosTurno.push(resultStr)
       for (const n of extraerPrecios(resultStr)) preciosVistos.add(n)
       messages.push({
         role:         'tool',
@@ -1119,7 +1148,9 @@ function formatProducto(p) {
   if (juego) linea += `\n[${juego.nota_juego}${juego.precio_pieza_suelta ? ` Pieza suelta: ${pesos(juego.precio_pieza_suelta)}.` : ''}${juego.piezas_por_opcion ? ` ${juego.piezas_por_opcion.join('; ')}.` : ''}]`
   // La descripción que escribió el equipo en Inventario: datos reales para responder.
   const descripcion = p.descripcion ? `\nDescripción: ${String(p.descripcion).slice(0, 300)}` : ''
-  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}`
+  // "Las sillas se venden aparte" en las bases de comedor (negocio.notaDeVenta).
+  const notaVenta = negocio.notaDeVenta(p.subcategoria ?? p.categoria)
+  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}${notaVenta ? `\n[${notaVenta}]` : ''}`
 }
 
 function parsearPrecio(p) {
@@ -1386,7 +1417,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         await actualizarPerfil(psid, { categorias_interes: [String(args.categoria).trim().toLowerCase()] })
         sincronizarClienteRed(psid, userInfo)
       }
-      return `[Catálogo de ${encontrado.nombre} enviado exitosamente. El cliente ya recibió el enlace: NO lo repitas. Sigue con UNA pregunta para entender qué busca (espacio, medida, estilo o presupuesto)]`
+      return `[Catálogo de ${encontrado.nombre} enviado exitosamente (${encontrado.url}). El cliente ya recibió el enlace: NO lo repitas. Sigue con UNA pregunta para entender qué busca (espacio, medida, estilo o presupuesto)]`
     }
 
     case 'reportar_imagen_no_identificada': {

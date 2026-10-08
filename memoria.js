@@ -60,6 +60,8 @@ function fusionarPerfil(actual, cambios = {}) {
   if (cambios.interes)     base.interes = String(cambios.interes).trim().substring(0, 300);
   // Si ya dijo que no quería dar sus datos, no se le vuelven a pedir (ni al transferir).
   if (cambios.no_quiso_dar_datos === true) base.no_quiso_dar_datos = true;
+  // Ya se los pidió una vez (ver notaPedirDatos): no se le vuelven a pedir por iniciativa propia.
+  if (cambios.datos_pedidos === true) base.datos_pedidos = true;
   if (cambios.nombre || cambios.telefono_contacto) base.no_quiso_dar_datos = false;
 
   for (const lista of ['preferencias', 'productos_interes', 'categorias_interes']) {
@@ -103,6 +105,30 @@ function construirContextoPerfil(perfil, { formatearMoneda } = {}) {
   return `LO QUE YA SABES DE ESTE CLIENTE (de conversaciones anteriores):\n${lineas.map(l => `- ${l}`).join('\n')}\n` +
     'Úsalo con naturalidad para no hacerle repetir lo que ya contó (por ejemplo, retoma su presupuesto o el espacio que mencionó). ' +
     'NO se lo recites como una ficha, y si algo ya no aplica porque te dice otra cosa, manda lo que diga ahora.';
+}
+
+// ── Pedir los datos en el momento justo ──────────────────────────────────────
+//
+// Dueño (2026-10-08): todo cliente interesado tiene que quedar con nombre y celular en el
+// sistema, aunque no pida asesor. El prompt lo dice, pero en la evaluación con el modelo
+// real Elena casi nunca lo pedía por su cuenta. Esta nota se agrega al turno (no al prompt
+// fijo, para no romper el caché) cuando toca: desde el segundo mensaje del cliente, si aún
+// no se sabe su nombre, no dijo que no y Elena no se lo pidió ya (una sola vez: insistir
+// espanta).
+const PIDIO_DATOS = /con qui[eé]n tengo el gusto|tu nombre|c[oó]mo te llamas|me regalas tu nombre|un (n[uú]mero de )?celular/i;
+
+// ¿Esta respuesta de Elena le pidió los datos al cliente? El agente lo marca en el perfil.
+function pidioDatos(texto) {
+  return PIDIO_DATOS.test(String(texto ?? ''));
+}
+
+function notaPedirDatos({ perfil = null, historial = [] } = {}) {
+  if (perfil?.nombre || perfil?.no_quiso_dar_datos || perfil?.datos_pedidos) return null;
+  const delCliente = historial.filter(m => m.role === 'user').length;
+  if (delCliente < 1) return null; // primer mensaje: primero se atiende
+  const yaLosPidio = historial.some(m => m.role === 'assistant' && PIDIO_DATOS.test(String(m.content ?? '')));
+  if (yaLosPidio) return null;
+  return 'TODAVÍA NO SABES EL NOMBRE DE ESTE CLIENTE. Si ya mostró interés (pidió un catálogo, un producto o un precio), en ESTA respuesta, después de responderle lo que preguntó, pídele su nombre y su celular de forma natural (ver DATOS DEL CLIENTE). Solo esta vez: si no los da, no insistas. Si te los da, llama guardar_contacto.';
 }
 
 // ── Resumen de la conversación ────────────────────────────────────────────────
@@ -181,7 +207,7 @@ async function prepararHistorial(deps, destinatario, { openai, modeloRapido } = 
 }
 
 module.exports = {
-  perfilVacio, fusionarPerfil, perfilTieneAlgo, construirContextoPerfil,
+  perfilVacio, fusionarPerfil, perfilTieneAlgo, construirContextoPerfil, notaPedirDatos, pidioDatos,
   necesitaResumen, generarResumen, construirContextoResumen, prepararHistorial,
   MENSAJES_LITERALES, UMBRAL_RESUMEN, MENSAJES_ENTRE_RESUMENES, MAX_PREFERENCIAS, MAX_PRODUCTOS, MAX_CATEGORIAS,
 };
