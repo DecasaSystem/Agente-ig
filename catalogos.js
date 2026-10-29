@@ -145,10 +145,15 @@ function slugSeccion(categoria) {
 // Las formas de nombrar lo que pidió el cliente: la clave tal cual, las categorías crudas
 // de la BD que el agente traduce a esa clave (mapaCategoriasBD: "comedores" →
 // "bases_comedores") y su nombre legible ("Comedores").
-function formasDelPedido(pedido, { mapaCategoriasBD = {}, etiquetas = {} } = {}) {
+function formasDelPedido(pedido, { mapaCategoriasBD = {}, etiquetas = {}, alias = {} } = {}) {
   const clave = String(pedido ?? '').trim();
   const claveNorm = palabras(clave).join('_');
   const formas = [clave];
+  // Cómo lo dice el cliente → cómo se llama el catálogo ("salas" → "Sofas y modulares").
+  // Viene de negocio.json → catalogoPublico.alias (caso real del 2026-10-29).
+  for (const [dicho, nombre] of Object.entries(alias)) {
+    if (mismasPalabras(palabras(dicho), palabras(clave))) formas.push(...[].concat(nombre));
+  }
   for (const [crudo, canonica] of Object.entries(mapaCategoriasBD)) {
     if (palabras(canonica).join('_') === claveNorm) formas.push(crudo);
   }
@@ -156,6 +161,20 @@ function formasDelPedido(pedido, { mapaCategoriasBD = {}, etiquetas = {} } = {})
     if (palabras(k).join('_') === claveNorm) formas.push(etiqueta);
   }
   return formas.map(palabras).filter(p => p.length);
+}
+
+// ¿Una categoría del inventario (su clave o su nombre) es lo que pidió el cliente o el
+// catálogo que se le mandó? Sirve para decirle, junto con el catálogo, las promociones que
+// corren en esa categoría (caso real del 2026-10-29: "tenemos 20 % en los existentes").
+function categoriaDelPedido(pedido, nombresCategoria, opciones = {}, nombreCatalogo = null) {
+  const formas = formasDelPedido(pedido, opciones);
+  // "Sofas y modulares" junta dos categorías: cada parte cuenta por separado.
+  if (nombreCatalogo) {
+    formas.push(palabras(nombreCatalogo));
+    for (const parte of String(nombreCatalogo).split(/\s+y\s+|,/i)) formas.push(palabras(parte));
+  }
+  return [].concat(nombresCategoria).filter(Boolean).map(palabras)
+    .some(t => t.length && formas.some(f => mismasPalabras(f, t)));
 }
 
 // El único candidato con las mismas palabras. `nombresDe(c)` da el texto (o los
@@ -180,7 +199,7 @@ const PEDIDOS_GENERALES = new Set(['', 'todo', 'todos', 'general', 'completo', '
  * Sin categoría ("el catálogo") → la portada <app>/c con todos.
  *
  * fuentes:  { herramientas: {clave: url}, visuales: [{nombre, slug}], secciones: [{categoria, productos}] }
- * opciones: { urlBase, mapaCategoriasBD, etiquetas, rotos: Set<url> }
+ * opciones: { urlBase, mapaCategoriasBD, etiquetas, alias, rotos: Set<url> }
  * Devuelve { url, fuente: 'visual'|'inventario'|'pdf'|'portada', nombre } o null.
  */
 function resolverCatalogo(pedido, fuentes = {}, opciones = {}) {
@@ -308,6 +327,7 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
     cargar,
     resolver: (pedido) => resolverCatalogo(pedido, fuentes(), { ...opciones, rotos: estado.rotos }),
     disponibles: () => catalogosDisponibles(fuentes(), opciones),
+    delPedido: (pedido, nombresCategoria, nombreCatalogo) => categoriaDelPedido(pedido, nombresCategoria, opciones, nombreCatalogo),
     cuantos: () => Object.keys(estado.herramientas).length + estado.visuales.length + estado.secciones.length,
     // Para el comentario de Instagram y las pruebas.
     estado,
@@ -316,6 +336,7 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
 
 module.exports = {
   leerCatalogos, leerOtrasFuentes, resolverCatalogo, catalogosDisponibles, revisarEnlaces, crearCatalogos,
+  categoriaDelPedido,
   // Para pruebas
   palabras, slugSeccion,
 };

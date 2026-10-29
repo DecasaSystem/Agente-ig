@@ -44,6 +44,12 @@ const TIPOS = {
 // fuera_de_ventana casi siempre: justo los clientes que no volvieron, que son para los
 // que existe).
 const HORAS_POR_DEFECTO = 20;
+// Qué configuración de horas usa cada seguimiento comercial (los de cita van a hora fija).
+const HORAS_DEL_TIPO = {
+  carrito_abandonado: 'horasCarrito',
+  interes_pendiente:  'horasInteresPendiente',
+};
+
 function horasConfiguradas(clave) {
   const h = Number(negocio.cfg.seguimientos?.[clave]);
   return h > 0 && h < 24 ? h : HORAS_POR_DEFECTO;
@@ -78,6 +84,13 @@ async function motivoParaNoEnviar(deps, seguimiento) {
   // es molestar a alguien que lleva meses sin hablar con el negocio.
   if (minutos === null || minutos === undefined) return 'sin_datos';
   if (minutos >= VENTANA_MENSAJERIA_MIN) return 'fuera_de_ventana';
+
+  // Los comerciales ("¿pudiste pensarlo?", carrito) son para quien se quedó callado. Si el
+  // cliente siguió escribiendo después de programarlo, todavía no: se espera a que lleve
+  // las horas configuradas en silencio. Antes le llegaba "ayer quedamos hablando…" a
+  // alguien que había escrito hace una hora.
+  const horas = HORAS_DEL_TIPO[seguimiento.tipo] ? horasConfiguradas(HORAS_DEL_TIPO[seguimiento.tipo]) : null;
+  if (horas && minutos < horas * 60) return 'cliente_activo';
 
   return null;
 }
@@ -132,6 +145,20 @@ async function procesarPendientes(deps, limite = 20) {
         resumen.descartados++;
       } else {
         await deps.db.posponerSeguimiento(s.id, POSPONER_MIN);
+        resumen.pospuestos++;
+      }
+      continue;
+    }
+
+    if (motivo === 'cliente_activo') {
+      // Siguió hablando: se corre para cuando cumpla las horas en silencio.
+      if ((s.posposiciones ?? 0) >= MAX_POSPOSICIONES) {
+        await deps.db.marcarSeguimiento(s.id, 'descartado', 'el cliente siguió activo');
+        resumen.descartados++;
+      } else {
+        const horas = horasConfiguradas(HORAS_DEL_TIPO[s.tipo]);
+        const minutos = await deps.minutosDesdeUltimoMensaje(s.destinatario);
+        await deps.db.posponerSeguimiento(s.id, Math.max(POSPONER_MIN, Math.round(horas * 60 - (minutos ?? 0))));
         resumen.pospuestos++;
       }
       continue;
@@ -254,8 +281,28 @@ async function programarInteresPendiente(deps, { destinatario, producto, nombre,
   });
 }
 
+// "No dejes ir al cliente" (dueño, 2026-10-29): si en el turno Elena le mostró productos,
+// precios, fotos o un catálogo y el cliente no cerró nada (carrito, pedido, cita, asesor),
+// se le programa el "¿pudiste pensarlo?". Antes solo se programaba si el modelo reportaba
+// una objeción, y quien decía "gracias" y se iba no volvía a saber de nosotros.
+const HERRAMIENTAS_DE_INTERES = new Set(['buscar_productos', 'buscar_por_presupuesto', 'enviar_foto', 'enviar_carrusel', 'enviar_catalogo']);
+const HERRAMIENTAS_DE_CIERRE = new Set(['agregar_al_carrito', 'confirmar_pedido', 'agendar_cita', 'solicitar_asesor', 'transferir_asesor', 'reportar_proveedor']);
+
+function debeProgramarInteres(herramientas = []) {
+  return herramientas.some(h => HERRAMIENTAS_DE_INTERES.has(h)) && !herramientas.some(h => HERRAMIENTAS_DE_CIERRE.has(h));
+}
+
+// El producto del que se habló, para el mensaje ("Ayer quedamos hablando de …").
+function productoDeArgs(args = {}) {
+  const v = args.producto ?? args.nombre_producto ?? args.nombre
+    ?? (Array.isArray(args.productos) ? args.productos[0] : null) ?? args.consulta ?? null;
+  const t = v == null ? '' : String(v).trim();
+  return t && t.length <= 60 ? t : null;
+}
+
 module.exports = {
   TIPOS,
+  debeProgramarInteres, productoDeArgs, HERRAMIENTAS_DE_INTERES, HERRAMIENTAS_DE_CIERRE,
   construirMensaje, motivoParaNoEnviar,
   programar, cancelar, procesarPendientes, iniciarWorker,
   programarRecordatoriosCita, programarCarritoAbandonado, programarInteresPendiente,

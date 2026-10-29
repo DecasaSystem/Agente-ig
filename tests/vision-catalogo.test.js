@@ -43,6 +43,10 @@ test('vision: compara solo con la categoría clasificada y devuelve coincidencia
   assert.ok(!textos.includes('SOFA ROMA') && !textos.includes('SILLA SELENE'))
   assert.equal(openai.llamadas[0].messages[1].content[1].image_url.detail, 'low')
   assert.ok(vc.construirContextoVision(r, p => p.nombre).includes('COINCIDENCIA VISUAL ALTA'))
+  // Si la foto viene de algo compartido (puede ser de otra cuenta), no se afirma que es nuestro.
+  const compartida = vc.construirContextoVision(r, p => p.nombre, { puedeSerDeOtraCuenta: true })
+  assert.ok(compartida.includes('tenemos uno muy parecido') && compartida.includes('BASE ABANICA'))
+  assert.ok(!compartida.includes('es nuestra/nuestro'))
 })
 
 test('vision: el texto leído en la captura identifica el producto sin comparar', async () => {
@@ -82,4 +86,40 @@ test('vision: más de 20 fotos se comparan por tandas', async () => {
   const { coincidencias } = await vc.compararConCategoria(openai, IMAGEN, muchos)
   assert.equal(openai.llamadas.length, 2)
   assert.deepEqual(coincidencias.map(c => c.nombre), ['BASE 22', 'BASE 3'])
+})
+
+// Historia con tres sofás distintos (caso real del 2026-10-29): se presentan los tres, en
+// el orden de la foto, con el precio de cada uno.
+test('varios productos en la misma foto: los presenta todos, en su orden', async () => {
+  const sofas = [
+    { nombre: 'SOFA CONFORT', imagen: 'https://res.cloudinary.com/x/image/upload/v1/e.png', precio: 3140000, categoria: 'sofas' },
+    { nombre: 'MODULAR TERRA', imagen: 'https://res.cloudinary.com/x/image/upload/v1/f.png', precio: 3880000, categoria: 'sofas' },
+    { nombre: 'SOFA TORELLO', imagen: 'https://res.cloudinary.com/x/image/upload/v1/g.png', precio: 2040000, categoria: 'sofas' },
+  ]
+  const openai = openaiFalso({
+    clasificacion: { es_mueble: true, categorias: ['sofas'], es_captura: false, texto_visible: '', descripcion: 'tres sofás', muebles_distintos: 3 },
+    comparaciones: [{ coincidencias: [
+      { indice: 1, similitud: 93, razon: 'mismo' }, { indice: 2, similitud: 90, razon: 'mismo' }, { indice: 3, similitud: 88, razon: 'mismo' },
+    ] }],
+  })
+  const r = await vc.identificarPorVision(openai, IMAGEN, { inventarioPlano: sofas, categorias: CATEGORIAS })
+  assert.equal(r.tipo, 'varios')
+  assert.deepEqual(r.productos.map(p => p.nombre), ['SOFA CONFORT', 'MODULAR TERRA', 'SOFA TORELLO'])
+  const pedido = openai.llamadas[1].messages[1].content.at(-1).text
+  assert.match(pedido, /3 muebles DISTINTOS/)
+
+  const ctx = vc.construirContextoVision(r, p => `${p.nombre} — ${p.precio}`)
+  assert.match(ctx, /3 PRODUCTOS DEL CATÁLOGO/)
+  assert.ok(ctx.indexOf('SOFA CONFORT') < ctx.indexOf('MODULAR TERRA') && ctx.indexOf('MODULAR TERRA') < ctx.indexOf('SOFA TORELLO'))
+  assert.match(vc.construirContextoVision(r, p => p.nombre, { puedeSerDeOtraCuenta: true }), /NO digas que son nuestros/)
+})
+
+test('varios muebles pero solo uno es nuestro: sigue como coincidencia de uno', async () => {
+  const openai = openaiFalso({
+    clasificacion: { es_mueble: true, categorias: ['sofas'], es_captura: false, texto_visible: '', descripcion: 'dos sofás', muebles_distintos: 2 },
+    comparaciones: [{ coincidencias: [{ indice: 1, similitud: 92, razon: 'mismo' }] }],
+  })
+  const r = await vc.identificarPorVision(openai, IMAGEN, { inventarioPlano: INVENTARIO, categorias: CATEGORIAS })
+  assert.equal(r.tipo, 'alta')
+  assert.equal(r.producto.nombre, 'SOFA ROMA')
 })

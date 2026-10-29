@@ -37,6 +37,42 @@ const MIGRACIONES = [
       PRIMARY KEY (telefono, dia)
     )`,
   },
+  // Copia de nuestras historias mientras están publicadas. Instagram solo deja ver una
+  // historia 24 h: un cliente que responde a una ya vencida (caso real del 2026-10-29)
+  // dejaba a Elena sin saber qué producto mostraba. Se guarda una imagen reducida (~50 KB)
+  // y el texto; se borran a los 30 días (purgarHistorias).
+  {
+    id: 'ig-2026-10-29-historias',
+    descripcion: 'tabla ig_historias: copia de las historias propias para responder cuando ya vencieron',
+    sql: `CREATE TABLE IF NOT EXISTS ig_historias (
+      story_id     VARCHAR(40) PRIMARY KEY,
+      media_type   VARCHAR(20),
+      caption      TEXT,
+      imagen       MEDIUMBLOB,
+      mime         VARCHAR(40),
+      publicada_en DATETIME NULL,
+      guardada_en  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_publicada (publicada_en)
+    )`,
+  },
+  // Lo que le mandamos a cada cliente (foto, carrusel o texto), por el mid de Instagram.
+  // Cuando el cliente desliza y "responde" a una de esas fotos, el webhook solo trae el
+  // mid (reply_to.mid): sin esto Elena no sabía de qué comedor le hablaban (caso real del
+  // 2026-10-29, "Nos gustó este comedor y..." respondiendo a una foto del asesor). Guarda
+  // lo de la IA (con el producto) y lo del asesor (por los ecos). Se borra a los 30 días.
+  {
+    id: 'ig-2026-10-29-mensajes-enviados',
+    descripcion: 'tabla ig_mensajes_enviados: qué foto o texto era cada mensaje nuestro, para entender las respuestas',
+    sql: `CREATE TABLE IF NOT EXISTS ig_mensajes_enviados (
+      mid         VARCHAR(255) PRIMARY KEY,
+      psid        VARCHAR(64) NOT NULL,
+      producto    VARCHAR(600) NULL,
+      imagen_url  TEXT NULL,
+      texto       VARCHAR(600) NULL,
+      creado      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_creado (creado)
+    )`,
+  },
 ]
 
 async function runMigrations() {
@@ -609,6 +645,82 @@ function normalizarCategoria(cat) {
   return CATEGORIA_KEY_MAP[cat] ?? cat
 }
 
+// ── Copia de nuestras historias (ver la migración ig-2026-10-29-historias) ────────────
+
+async function historiasGuardadas(ids) {
+  if (!ids.length) return new Set()
+  const [rows] = await pool.query('SELECT story_id FROM ig_historias WHERE story_id IN (?)', [ids])
+  return new Set(rows.map(r => String(r.story_id)))
+}
+
+async function guardarHistoria({ storyId, mediaType, caption, imagen, mime, publicadaEn }) {
+  await pool.query(
+    `INSERT IGNORE INTO ig_historias (story_id, media_type, caption, imagen, mime, publicada_en)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [String(storyId), mediaType ?? null, caption ?? null, imagen ?? null, mime ?? null, publicadaEn ?? null]
+  )
+}
+
+// La copia de una historia por su id, o null. Nunca lanza: sin copia se sigue como antes.
+async function getHistoria(storyId) {
+  try {
+    const [rows] = await pool.query(
+      'SELECT story_id, media_type, caption, imagen, mime FROM ig_historias WHERE story_id = ?',
+      [String(storyId)]
+    )
+    return rows[0] ?? null
+  } catch (e) {
+    console.warn('[historias] no se pudo leer la copia:', e.message)
+    return null
+  }
+}
+
+// ── Mensajes nuestros (ver la migración ig-2026-10-29-mensajes-enviados) ──────────────
+
+// Llega dos veces por cada foto de la IA: al enviarla (con el producto y la foto del
+// catálogo) y por su eco (con la copia de Meta). Lo que trae producto manda; si no, se
+// conserva lo primero que se supo. Nunca lanza: perder esto solo quita contexto.
+async function registrarMensajeEnviado({ mid, psid, producto = null, imagenUrl = null, texto = null }) {
+  if (!mid || !psid) return
+  try {
+    await pool.query(
+      `INSERT INTO ig_mensajes_enviados (mid, psid, producto, imagen_url, texto) VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         imagen_url = IF(VALUES(producto) IS NOT NULL, VALUES(imagen_url), COALESCE(imagen_url, VALUES(imagen_url))),
+         producto   = COALESCE(VALUES(producto), producto),
+         texto      = COALESCE(texto, VALUES(texto))`,
+      [String(mid), String(psid), producto?.substring(0, 600) ?? null, imagenUrl ?? null, texto?.substring(0, 600) ?? null]
+    )
+  } catch (e) {
+    console.warn('[mensajes-enviados] no se pudo registrar:', e.message)
+  }
+}
+
+// El mensaje nuestro con ese mid, solo si se le mandó a ESE cliente (un mid ajeno no
+// debe revelar lo que se le envió a otro). null si no está.
+async function getMensajeEnviado(mid, psid) {
+  try {
+    const [rows] = await pool.query(
+      'SELECT producto, imagen_url, texto FROM ig_mensajes_enviados WHERE mid = ? AND psid = ?',
+      [String(mid), String(psid)]
+    )
+    return rows[0] ?? null
+  } catch (e) {
+    console.warn('[mensajes-enviados] no se pudo leer:', e.message)
+    return null
+  }
+}
+
+async function purgarMensajesEnviados(dias = 30) {
+  const [r] = await pool.query('DELETE FROM ig_mensajes_enviados WHERE creado < NOW() - INTERVAL ? DAY', [dias])
+  return r?.affectedRows ?? 0
+}
+
+async function purgarHistorias(dias = 30) {
+  const [r] = await pool.query('DELETE FROM ig_historias WHERE guardada_en < NOW() - INTERVAL ? DAY', [dias])
+  return r?.affectedRows ?? 0
+}
+
 // Unidades LIBRES por tienda: disponible − reservada, la misma cuenta que usa el sistema
 // de ventas (CotizacionController, DevolucionController). Antes se miraba solo
 // cantidad_disponible y el agente decía "hay en tienda" de piezas que ya estaban
@@ -630,6 +742,63 @@ async function consultarStock(nombreProducto) {
   return rows
 }
 
+// Unidades libres por producto (disponible − reservada) sumando las sedes activas, la
+// misma cuenta de consultarStock. La usa la regla del descuento: el 5 % por efectivo o
+// transferencia solo aplica a lo que hay en existencia (dueño, 2026-10-20). Si la consulta
+// falla se devuelve null y el agente no ofrece la cifra con descuento.
+// Promociones del sistema de ventas (Inventario → Promociones) que están encendidas y no
+// han terminado, agrupadas por producto, con los nombres de sus tiendas activas. La fecha
+// de hoy se mira al usarlas (core/promociones.js), no aquí. Si la tabla no existe (la
+// migración no ha corrido) o la consulta falla, no hay promociones: se vende a precio de
+// lista, como hace Nueva orden cuando no puede leerlas.
+async function getPromocionesPorProducto() {
+  try {
+    const [rows] = await pool.query(
+      `SELECT pr.id, pr.nombre, pr.producto_id, pr.config_id, pr.variante_id, pr.tipo, pr.valor,
+              DATE_FORMAT(pr.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
+              DATE_FORMAT(pr.fecha_fin, '%Y-%m-%d')    AS fecha_fin,
+              GROUP_CONCAT(t.nombre ORDER BY t.nombre SEPARATOR '|') AS tiendas
+       FROM promociones pr
+       JOIN promocion_tienda pt ON pt.promocion_id = pr.id
+       JOIN tiendas t           ON t.id = pt.tienda_id AND t.activa = 1
+       WHERE pr.activa = 1 AND pr.fecha_fin >= CURDATE() - INTERVAL 1 DAY
+       GROUP BY pr.id`
+    )
+    const mapa = new Map()
+    for (const r of rows) {
+      if (!mapa.has(r.producto_id)) mapa.set(r.producto_id, [])
+      mapa.get(r.producto_id).push({
+        id: r.id, nombre: r.nombre || null,
+        config_id: r.config_id ?? null, variante_id: r.variante_id ?? null,
+        tipo: r.tipo, valor: Number(r.valor) || 0,
+        fecha_inicio: r.fecha_inicio, fecha_fin: r.fecha_fin,
+        tiendas: String(r.tiendas ?? '').split('|').filter(Boolean),
+      })
+    }
+    return mapa
+  } catch (e) {
+    console.warn('[inventario] no se pudieron leer las promociones:', e.message)
+    return new Map()
+  }
+}
+
+async function getExistenciasPorProducto() {
+  try {
+    const [rows] = await pool.query(
+      `SELECT i.producto_id,
+              SUM(GREATEST(i.cantidad_disponible - COALESCE(i.cantidad_reservada, 0), 0)) AS libres
+       FROM inventario i
+       JOIN tiendas t ON i.tienda_id = t.id
+       WHERE t.activa = 1
+       GROUP BY i.producto_id`
+    )
+    return new Map(rows.map(r => [r.producto_id, Number(r.libres) || 0]))
+  } catch (e) {
+    console.warn('[inventario] no se pudieron leer las existencias:', e.message)
+    return null
+  }
+}
+
 async function getInventario() {
   let rows
   try {
@@ -645,10 +814,15 @@ async function getInventario() {
     )
   }
   const variantes = await getVariantesPorProducto()
+  const existencias = await getExistenciasPorProducto()
+  const promociones = await getPromocionesPorProducto()
   return rows.map(r => ({
     ...r,
     subcategoria: normalizarCategoria(r.subcategoria),
     variantes: variantes.get(r.id) ?? [],
+    // null = no se sabe (ver getExistenciasPorProducto); 0 = se fabrica sobre pedido.
+    existencias: existencias && r.id != null ? (existencias.get(r.id) ?? 0) : null,
+    promociones: promociones.get(r.id) ?? [],
   }))
 }
 
@@ -685,7 +859,9 @@ async function getVariantesPorProducto() {
                   ELSE p.precio_base END                       AS precio,
              tv.nombre                                         AS tipo,
              tv.afecta_precio                                  AS afecta_precio,
-             CASE WHEN cfg.precio_adicional > 0 THEN 1 ELSE 0 END AS precio_propio
+             CASE WHEN cfg.precio_adicional > 0 THEN 1 ELSE 0 END AS precio_propio,
+             cfg.id                                            AS config_id,
+             NULL                                              AS variante_id
       FROM producto_variante_configs cfg
       JOIN productos p              ON p.id  = cfg.producto_id AND p.activo = 1
       JOIN tipos_variante tv        ON tv.id = cfg.tipo_variante_id AND tv.activo = 1
@@ -693,7 +869,7 @@ async function getVariantesPorProducto() {
 
       UNION ALL
 
-      SELECT v.producto_id, v.medida, v.precio_variante, 'Medidas', 1, 1
+      SELECT v.producto_id, v.medida, v.precio_variante, 'Medidas', 1, 1, NULL, v.id
       FROM producto_variantes v
       JOIN productos p ON p.id = v.producto_id AND p.activo = 1
       WHERE v.activo = 1
@@ -710,6 +886,9 @@ async function getVariantesPorProducto() {
         afectaPrecio: Number(r.afecta_precio ?? 0) === 1,
         // precio_adicional > 0: esta opción tiene precio propio (ver precio-variantes.js).
         precioPropio: Number(r.precio_propio ?? 1) === 1,
+        // A qué apunta una promoción de esta opción o tela (core/promociones.js).
+        configId:   r.config_id ?? null,
+        varianteId: r.variante_id ?? null,
       })
     }
 
@@ -1146,6 +1325,8 @@ module.exports = {
   registrarGasto, getGastoHoy, limpiarGastoAntiguo, contarPedidosRecientes,
   eliminarCatalogosDescuento,
   consultarStock,
+  historiasGuardadas, guardarHistoria, getHistoria, purgarHistorias,
+  registrarMensajeEnviado, getMensajeEnviado, purgarMensajesEnviados,
   getHashesProductos,
   upsertHashProducto,
 }

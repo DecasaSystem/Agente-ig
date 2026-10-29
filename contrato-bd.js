@@ -19,22 +19,27 @@ const CONTRATO = {
                               'descripcion', 'piezas_por_juego', 'precio_pieza'],
   inventario:                ['producto_id', 'tienda_id', 'cantidad_disponible', 'cantidad_reservada'],
   tiendas:                   ['id', 'nombre', 'es_fabrica', 'activa'],
-  producto_variante_configs: ['producto_id', 'tipo_variante_id', 'opcion_id', 'precio_adicional'],
+  producto_variante_configs: ['id', 'producto_id', 'tipo_variante_id', 'opcion_id', 'precio_adicional'],
   tipos_variante:            ['id', 'nombre', 'afecta_precio', 'activo'],
   tipo_variante_opciones:    ['id', 'nombre', 'activo'],
-  producto_variantes:        ['producto_id', 'medida', 'precio_variante', 'activo'],
+  producto_variantes:        ['id', 'producto_id', 'medida', 'precio_variante', 'activo'],
   herramientas:              ['clave', 'contenido', 'activo', 'orden'],
   conversaciones_wa:         ['telefono', 'estado', 'tipo', 'created_at'],
 };
 
 // Tablas de las que el agente puede prescindir: si no están, tiene un respaldo.
-const OPCIONALES = new Set(['configuracion', 'catalogos', 'catalogo_paginas']);
+const OPCIONALES = new Set(['configuracion', 'catalogos', 'catalogo_paginas', 'promociones', 'promocion_tienda']);
 const CONTRATO_OPCIONAL = {
   configuracion:    ['clave', 'valor'],
   // Catálogos visuales de Gestión (catalogos.js). Sin ellos el agente sigue con PDF y
   // con la página de la sección del inventario.
   catalogos:        ['id', 'nombre', 'slug', 'activo', 'orden'],
   catalogo_paginas: ['catalogo_id'],
+  // Promociones por tienda (Inventario → Promociones; core/promociones.js). Sin ellas se
+  // vende a precio de lista.
+  promociones:      ['id', 'nombre', 'producto_id', 'config_id', 'variante_id', 'tipo', 'valor',
+                     'fecha_inicio', 'fecha_fin', 'activa'],
+  promocion_tienda: ['promocion_id', 'tienda_id'],
 };
 
 // Devuelve la lista de { tabla, columna } que faltan (columna null = falta la tabla).

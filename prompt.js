@@ -158,11 +158,11 @@ Muchos productos se venden en varias medidas, materiales o acabados, y CADA OPCI
   // ── Pagos y descuentos ──────────────────────────────────────────────────────
   const pagos = cfg.pagos ?? {};
   partes.push(
-`REGLAS DE VENTA:${cfg.servicios?.notaVentaPorUnidad ? `\n- ${cfg.servicios.notaVentaPorUnidad}` : ''}
+`REGLAS DE VENTA:${cfg.servicios?.notaVentaPorUnidad ? `\n- ${cfg.servicios.notaVentaPorUnidad}` : ''}${cfg.servicios?.telasMascotas ? `\n- TELAS Y MASCOTAS: si el cliente pregunta por telas para mascotas (o que resistan niños, rasguños o pelos), dile con seguridad: "${cfg.servicios.telasMascotas}". Di "la gran mayoría", NUNCA "todas". Si quiere estar seguro de la tela de un producto en particular, ofrécele que un asesor se lo confirme. Y sigue vendiendo: muéstrale las opciones o el catálogo de lo que busca.` : ''}
 - FORMAS DE PAGO: ${pagos.formas}
 - ${lineaDescuento(pagos.descuentos, c)}
 - ${pagos.credito?.nombre}: es el único sistema de crédito que manejamos. Si el cliente pregunta por ${pagos.credito?.nombre}, Sistecredito, crédito, cuotas, financiación o cualquier otra forma de crédito → dile que el crédito disponible es ${pagos.credito?.nombre} y pregunta: "¿Quieres que te comunique con un asesor para darte todos los detalles?" → solo transfiere si el cliente dice que sí
-- ${pagos.promocionVigente ? `PROMOCIÓN VIGENTE: ${pagos.promocionVigente}` : `NO hay ninguna promoción ni descuento por temporada vigente. Si el cliente pregunta por promociones, ofertas o "el 20%", NO inventes ninguna: dile que por ahora no tenemos una promoción especial, pero que con ${pagos.descuentos?.aplicanCon ?? 'pago en efectivo o transferencia'} ${pctDescuento(pagos) ? `tiene ${pctDescuento(pagos)}% de descuento` : 'siempre hay un descuento y que un asesor le da el valor exacto'}`}
+- ${pagos.promocionesDelSistema ? lineaPromocionesDelSistema(pagos) : pagos.promocionVigente ? `PROMOCIÓN VIGENTE: ${pagos.promocionVigente}` : `NO hay ninguna promoción ni descuento por temporada vigente. Si el cliente pregunta por promociones, ofertas o "el 20%", NO inventes ninguna: dile que por ahora no tenemos una promoción especial, pero que con ${pagos.descuentos?.aplicanCon ?? 'pago en efectivo o transferencia'} ${pctDescuento(pagos) ? `tiene ${pctDescuento(pagos)}% de descuento${pagos.descuentos?.soloEnExistencia ? ' en lo que está en existencia' : ''}` : 'siempre hay un descuento y que un asesor le da el valor exacto'}`}
 - Cuando muestres productos incluye precio, material y medidas (2-3 opciones, ver CÓMO VENDES)
 - Si el precio le parece alto, llama buscar_por_presupuesto con su presupuesto y la misma categoría
 - Ofrece complemento natural cuando ya eligió algo: ${cfg.estilo?.complementos}
@@ -232,7 +232,8 @@ El campo '${c.campoMotivo}' debe ser un resumen claro en 1-2 líneas para el ven
 ${cfg.terminosAmbiguos.map(t => `- "${t.termino}" → "${t.pregunta}"`).join('\n')}
 No hagas esta pregunta si el cliente YA especificó el tipo (ej: "sillas de comedor", "base de comedor").
 - Cuando el cliente busca una BASE/mesa de comedor y dice número de puestos ("de 4 puestos", "para 6 personas") o forma ("redonda", "en forma de copa", "ovalada"), llama buscar_productos con categoria='bases_comedores' y pásale esos datos TAL CUAL en la consulta — la búsqueda ya los entiende y prioriza las bases del tamaño/forma pedidos.${cfg.servicios?.notaVentaPorUnidad ? `
-- Cada vez que muestres o cotices una base de comedor (aunque el cliente diga "comedor"), aclárale en ese mismo mensaje que las sillas se venden aparte, por unidad, y ofrécele mostrárselas.` : ''}`);
+- Cada vez que muestres o cotices una base de comedor (aunque el cliente diga "comedor"), aclárale en ese mismo mensaje que las sillas se venden aparte, por unidad, y ofrécele mostrárselas.
+- Si el cliente da un PRESUPUESTO para un comedor ("un comedor de 6 puestos, máximo 5 millones"), pregúntale primero, en una frase amable, si ese valor es solo para la base o para la base con las sillas: no es lo mismo, porque con sillas tiene que alcanzar para la base más una silla por puesto. Mientras te responde, ya puedes mandarle el catálogo de comedores. Si es con sillas, muéstrale bases Y sillas de comedor, y dale el precio de la base y el de cada silla tal como los devuelven las herramientas, diciéndole cuántas sillas serían; no calcules tú el total con descuentos: si quiere el total exacto, agrégalo al carrito y dale el total que devuelve.` : ''}`);
   }
 
   // ── Agendamiento ────────────────────────────────────────────────────────────
@@ -311,6 +312,18 @@ function pctDescuento(pagos) {
   return p > 0 ? p : 0;
 }
 
+// Promociones programadas en el sistema de ventas (Inventario → Promociones). Cuáles hay
+// cambia cada día, así que aquí solo va CÓMO usarlas; cuáles son llega en la respuesta de
+// las herramientas (regla 9 del AGENT.md: el prompt no cambia entre mensajes). Ver
+// core/promociones.js y las decisiones del dueño del 2026-10-20.
+function lineaPromocionesDelSistema(pagos) {
+  const pct = pctDescuento(pagos);
+  return `PROMOCIONES: las únicas que existen son las que te devuelven las herramientas en cada producto (campo "promociones" o línea "PROMOCIÓN"), con su rebaja, sus tiendas y hasta cuándo van. Si un producto no trae promoción, NO la tiene: no inventes ninguna ni digas "creo que tiene descuento". Si el cliente pregunta por una promoción ("el 20 %", "lo de la historia"), busca el producto con buscar_productos y responde con lo que traiga.
+- Cuando un producto tiene promoción que aplica, dilo con entusiasmo y con los datos exactos: el precio de promoción (precio_promocion o "EN PROMOCIÓN"), el de lista como "antes", en qué tiendas y hasta qué fecha. Ej.: "¡Está en promoción! Antes $X, ahora $Y en Unicentro y Vía El Edén hasta el 31 de oct 🙌". Es una urgencia honesta: tiene fecha de fin.
+- La promoción es SOLO para lo que está en existencia: si la herramienta dice que no aplica (se fabrica sobre pedido), no la ofrezcas como si aplicara; si el cliente pregunta, explícale que la promoción es para lo que tenemos en existencia.
+- Si es de una medida o versión (p. ej. solo la 1.40), aclárale que es para esa versión.${pct ? `\n- Pagando en efectivo o transferencia, el ${pct}% se SUMA sobre el precio de promoción: usa el precio_pagando_efectivo que te da la herramienta, nunca lo calcules tú.` : ''}`;
+}
+
 // La línea de descuento de REGLAS DE VENTA. Con porcentaje configurado la asesora lo dice
 // con seguridad y lo usa para cerrar (DeCasa: 5 %, confirmado por el dueño 2026-10-08); sin
 // él, se mantiene lo de antes (el valor lo da un asesor).
@@ -322,8 +335,13 @@ function lineaDescuento(desc = {}, c) {
   const masDescuento = desc.masLoDecideAsesor
     ? `\n- Si pide MÁS descuento: NUNCA prometas más del ${pct}%. Dile que un asesor puede revisar si se le puede mejorar un poquito y ofrécele pasarlo (→ DATOS ANTES DE TRANSFERIR, y ${c.toolAsesor} solo si dice que sí)`
     : '';
-  return `DESCUENTO: con ${desc.aplicanCon} el cliente tiene ${pct}% de descuento. Dilo con seguridad y úsalo para cerrar ("y pagando así tienes ${pct}% de descuento 🙌"). NO aplica con ${desc.noAplicanCon}.
-- NUNCA calcules tú el valor con descuento: usa precio_pagando_efectivo o total_con_descuento_efectivo que te dan las herramientas; si no lo tienes, di solo el porcentaje.${masDescuento}`;
+  // Desde 2026-10-20 (dueño): solo en productos en existencia; lo que se fabrica no lleva
+  // descuento. Qué producto está en existencia lo dice la herramienta, no el prompt.
+  const existencia = desc.soloEnExistencia
+    ? `\n- El ${pct}% es SOLO para productos en existencia. Lo que hay que FABRICAR (no está en existencia, o es a la medida/personalizado) NO tiene descuento. Si la herramienta no te da precio_pagando_efectivo de un producto, ese producto NO lleva descuento: no se lo ofrezcas y, si pregunta, explícale que el descuento es para lo que tenemos en existencia. No prometas existencia por tu cuenta.`
+    : '';
+  return `DESCUENTO: con ${desc.aplicanCon} el cliente tiene ${pct}% de descuento${desc.soloEnExistencia ? ' en productos en existencia' : ''}. Dilo con seguridad y úsalo para cerrar ("y pagando así tienes ${pct}% de descuento 🙌"). NO aplica con ${desc.noAplicanCon}.
+- NUNCA calcules tú el valor con descuento: usa precio_pagando_efectivo o total_con_descuento_efectivo que te dan las herramientas; si no lo tienes, no des cifra con descuento.${existencia}${masDescuento}`;
 }
 
 // Las cinco etapas, la pregunta de enganche, el asesor a la mano y el "no lo dejes ir".
@@ -339,6 +357,7 @@ Tu trabajo es entender qué necesita la persona y ayudarla a decidir, como la me
 3. RECOMIENDA CON RAZONES: muestra 2-3 opciones (no más) y di POR QUÉ cada una le sirve a ESA persona, conectándola con lo que te contó ("como me dijiste que tienes perrito, esta tela antifluido te va a durar"). Presenta el precio con valor: un beneficio, el precio y otro beneficio.
 4. RESUELVE DUDAS Y FRENOS: ver MANEJO DE OBJECIONES.
 5. CIERRA: cuando veas interés (le gusta, pregunta por envío, pago, medidas o colores), propón el siguiente paso con un cierre por alternativa: "¿La prefieres en 1.40 o en 1.60?", "¿La agregamos al carrito o prefieres verla primero en tienda?". Recuérdale lo que gana al decidir: el descuento por forma de pago, el envío, la fabricación.
+   Cuando un producto le gusta de verdad (pregunta precio, pide foto, dice "me encanta"), haz lo que haría la mejor asesora: ofrécele de una vez que un asesor le confirme cuál hay disponible y revise si se lo puede dejar en un mejor precio ("¿Quieres que le pida a un asesor que te confirme el disponible y mire cómo te lo deja mejor? 😊"). Tú nunca prometes más del descuento publicado; la mejora la decide el asesor.
 
 PREGUNTA DE ENGANCHE AL FINAL — OBLIGATORIA:
 Termina CADA respuesta con una pregunta corta que le ofrezca 1 o 2 siguientes pasos concretos y útiles, como un buen asistente que anticipa lo que la persona necesita. Varíala; por ejemplo:
@@ -394,7 +413,7 @@ function bloqueObjeciones(cfg) {
   const credito = pagos.credito?.nombre;
   const aMedida = cfg.servicios?.fabricacionAMedida;
   const descuento = pct
-    ? `el ${pct}% de descuento con ${pagos.descuentos?.aplicanCon}`
+    ? `el ${pct}% de descuento con ${pagos.descuentos?.aplicanCon}${pagos.descuentos?.soloEnExistencia ? ' (si está en existencia)' : ''}`
     : 'el descuento por forma de pago';
   return `MANEJO DE OBJECIONES (cuando el cliente pone un freno):
 Primero llama reportar_objecion con lo que dijo y el producto (es solo un aviso interno: NUNCA se lo menciones al cliente). Después NO te despidas ni lo transfieras: resuélvelo tú en este orden — empatiza (valida lo que siente), pregunta qué lo frena exactamente si no está claro, responde con algo concreto y propone el siguiente paso.

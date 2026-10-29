@@ -38,6 +38,9 @@ const SIMILITUD_MEDIA = 60; // se presenta como "se parece mucho a…"
 const LOTE_MINIATURAS = 20;
 // Máximo de categorías a comparar cuando la foto tiene varios muebles (comedor completo).
 const MAX_CATEGORIAS = 2;
+// Máximo de productos distintos que se identifican en una misma foto (un collage o una
+// historia con tres sofás, caso real del 2026-10-29).
+const MAX_MUEBLES = 4;
 
 // Miniatura de Cloudinary para no mandar la foto completa del catálogo: 256 px bastan
 // para comparar formas y acabados. f_jpg y no f_auto: OpenAI acepta jpg/png/webp/gif y
@@ -75,8 +78,9 @@ async function clasificarImagen(openai, imagen, categorias) {
         es_captura:     { type: 'boolean', description: 'true si es una captura de pantalla (se ve interfaz de app, barra de estado, texto de publicación)' },
         texto_visible:  { type: 'string', description: 'Texto legible en la imagen que pueda identificar el producto (nombre, modelo). Cadena vacía si no hay.' },
         descripcion:    { type: 'string', description: 'Descripción breve del mueble principal: forma, material aparente, color, nº de puestos o piezas. Máx. 30 palabras.' },
+        muebles_distintos: { type: 'integer', description: 'Cuántos modelos DISTINTOS de mueble se muestran como productos (p. ej. una historia o collage con 3 sofás diferentes = 3). Un comedor (mesa con sus sillas) o un ambiente con un solo producto principal = 1.' },
       },
-      required: ['es_mueble', 'categorias', 'es_captura', 'texto_visible', 'descripcion'],
+      required: ['es_mueble', 'categorias', 'es_captura', 'texto_visible', 'descripcion', 'muebles_distintos'],
     },
   };
 
@@ -110,6 +114,7 @@ async function clasificarImagen(openai, imagen, categorias) {
     es_captura:    !!datos.es_captura,
     texto_visible: String(datos.texto_visible || '').trim(),
     descripcion:   String(datos.descripcion || '').trim(),
+    muebles:       Math.max(1, Math.min(MAX_MUEBLES, Math.round(Number(datos.muebles_distintos) || 1))),
     tokens: { entrada: usage.prompt_tokens ?? 0, salida: usage.completion_tokens ?? 0 },
   };
 }
@@ -118,7 +123,7 @@ async function clasificarImagen(openai, imagen, categorias) {
 
 // `candidatos`: [{ nombre, imagen, medidas, material }] — productos de UNA categoría con foto.
 // Devuelve [{ nombre, similitud, razon }] ordenado de mayor a menor similitud.
-async function compararConCategoria(openai, imagen, candidatos, { descripcion = '' } = {}) {
+async function compararConCategoria(openai, imagen, candidatos, { descripcion = '', muebles = 1 } = {}) {
   const conFoto = candidatos.filter(c => c.imagen);
   if (!conFoto.length) return { coincidencias: [], tokens: { entrada: 0, salida: 0 } };
 
@@ -161,7 +166,9 @@ async function compararConCategoria(openai, imagen, candidatos, { descripcion = 
       contenido.push({ type: 'text', text: `#${idx + 1} ${p.nombre}${p.medidas ? ` — ${p.medidas}` : ''}${p.material ? ` — ${p.material}` : ''}` });
       contenido.push({ type: 'image_url', image_url: { url: urlMiniatura(p.imagen), detail: 'low' } });
     });
-    contenido.push({ type: 'text', text: 'Devuelve las 3 fotos del catálogo más parecidas al mueble de la foto del cliente, con su similitud. Compara forma, proporciones, patas/base, respaldo, material y acabado — no el fondo ni la iluminación. Si la foto del cliente es una captura de pantalla, ignora la interfaz y fíjate solo en el mueble. Si ninguna se parece de verdad, dalo con similitud baja.' });
+    contenido.push({ type: 'text', text: (muebles > 1
+      ? `La foto del cliente muestra ${muebles} muebles DISTINTOS. Para CADA uno, devuelve la foto del catálogo que más se le parezca, con su similitud, en el orden en que aparecen en la foto (de izquierda a derecha o de arriba abajo).`
+      : 'Devuelve las 3 fotos del catálogo más parecidas al mueble de la foto del cliente, con su similitud.') + ' Compara forma, proporciones, patas/base, respaldo, material y acabado — no el fondo ni la iluminación. Si la foto del cliente es una captura de pantalla, ignora la interfaz y fíjate solo en el mueble. Si ninguna se parece de verdad, dalo con similitud baja.' });
 
     const resp = await openai.chat.completions.create({
       model: MODELO,
@@ -191,7 +198,12 @@ async function compararConCategoria(openai, imagen, candidatos, { descripcion = 
   for (const r of resultados) {
     if (!porNombre.has(r.nombre) || porNombre.get(r.nombre).similitud < r.similitud) porNombre.set(r.nombre, r);
   }
-  const coincidencias = [...porNombre.values()].sort((a, b) => b.similitud - a.similitud).slice(0, 3);
+  // Con varios muebles se respeta el orden de la foto (el del modelo) para poder decir
+  // "el primero… el segundo…"; con uno solo, de más a menos parecido.
+  const unicas = [...porNombre.values()];
+  const coincidencias = muebles > 1
+    ? unicas.slice(0, Math.max(3, muebles))
+    : unicas.sort((a, b) => b.similitud - a.similitud).slice(0, 3);
   return { coincidencias, tokens: { entrada: tokEntrada, salida: tokSalida } };
 }
 
@@ -222,10 +234,17 @@ async function identificarPorVision(openai, imagen, { inventarioPlano, categoria
   for (const cat of clasif.categorias) {
     const candidatos = inventarioPlano.filter(p => p.categoria === cat && p.imagen);
     if (!candidatos.length) continue;
-    const { coincidencias, tokens } = await compararConCategoria(openai, imagen, candidatos, { descripcion: clasif.descripcion });
+    const { coincidencias, tokens } = await compararConCategoria(openai, imagen, candidatos, { descripcion: clasif.descripcion, muebles: clasif.muebles });
     base.tokens.entrada += tokens.entrada;
     base.tokens.salida  += tokens.salida;
     for (const c of coincidencias) todas.push({ ...c, categoria: cat });
+  }
+  // Varios productos nuestros en la misma foto: se presentan todos, en su orden.
+  if (clasif.muebles > 1) {
+    const altas = todas.filter(c => c.similitud >= SIMILITUD_ALTA);
+    if (altas.length >= 2) {
+      return { ...base, tipo: 'varios', producto: null, productos: altas.slice(0, MAX_MUEBLES).map(c => c.producto), coincidencias: altas.slice(0, MAX_MUEBLES) };
+    }
   }
   todas.sort((a, b) => b.similitud - a.similitud);
 
@@ -241,8 +260,22 @@ async function identificarPorVision(openai, imagen, { inventarioPlano, categoria
 // Bloque de contexto para el modelo, con el nivel de certeza que corresponde. `formatear`
 // es la función del agente que describe un producto con sus datos reales (nombre,
 // precio, medidas, material) para que Elena no los invente.
-function construirContextoVision(resultado, formatear) {
+//
+// `puedeSerDeOtraCuenta`: la foto viene de una publicación o historia que el cliente
+// compartió, que puede ser de otra tienda. Aunque se parezca muchísimo, no se le afirma que
+// es nuestra: "tenemos una muy parecida" (caso real del 2026-10-29: historia de otra cuenta).
+function construirContextoVision(resultado, formatear, { puedeSerDeOtraCuenta = false } = {}) {
   if (!resultado) return null;
+  if (resultado.tipo === 'varios') {
+    const lista = resultado.productos.map((p, i) => `${i + 1}. ${formatear(p)}`).join('\n');
+    const como = puedeSerDeOtraCuenta
+      ? 'La foto viene de algo que el cliente compartió y puede ser de OTRA cuenta: NO digas que son nuestros, dile que tenemos unos muy parecidos'
+      : 'Son nuestros: preséntalos como "el primero es nuestro…, el segundo…"';
+    return `[LA IMAGEN MUESTRA ${resultado.productos.length} PRODUCTOS DEL CATÁLOGO, en este orden:\n${lista}\n${como}. Dale el nombre y el precio de CADA UNO con estos datos EXACTOS (no inventes medidas ni material), y pregúntale cuál le gustó más o si quiere fotos de alguno.]`;
+  }
+  if (puedeSerDeOtraCuenta && resultado.tipo === 'alta') {
+    return `[MUY PARECIDO A UN PRODUCTO NUESTRO (${resultado.coincidencias[0].similitud}/100, ${resultado.coincidencias[0].razon}). La foto viene de algo que el cliente compartió y puede ser de OTRA cuenta o tienda, así que NO digas que es nuestro ni que es el mismo: dile que tenemos uno muy parecido y preséntale este con sus datos EXACTOS:\n${formatear(resultado.producto)}\nOfrécele la foto con enviar_foto. Si quiere uno idéntico al de su foto, en DeCasa lo fabricamos: ofrécele pasarlo con un asesor (personalización).]`;
+  }
   const nombresCat = (resultado.clasificacion?.categorias || []).join(' y ');
   const desc = resultado.clasificacion?.descripcion ? ` Lo que se ve: ${resultado.clasificacion.descripcion}.` : '';
 
@@ -276,6 +309,6 @@ function construirContextoVision(resultado, formatear) {
 module.exports = {
   clasificarImagen, compararConCategoria, identificarPorVision, construirContextoVision,
   urlMiniatura, normalizar,
-  SIMILITUD_ALTA, SIMILITUD_MEDIA, LOTE_MINIATURAS, MAX_CATEGORIAS,
+  SIMILITUD_ALTA, SIMILITUD_MEDIA, LOTE_MINIATURAS, MAX_CATEGORIAS, MAX_MUEBLES,
   MODELO, MODELO_RAPIDO,
 };

@@ -105,7 +105,20 @@
   },
   "catalogoPublico": {
     "_comentario": "Dirección de la app del sistema de ventas. Con ella el agente arma los enlaces de los catálogos visuales (/c/<slug>) y de las secciones del inventario (/catalogo/<categoría>) cuando una categoría no tiene PDF en Herramientas. Se puede cambiar con la variable CATALOGO_PUBLICO_URL.",
-    "urlBase": "https://sistema-de-ventas-olive.vercel.app"
+    "urlBase": "https://sistema-de-ventas-olive.vercel.app",
+    "_alias": "Cómo pide el cliente un catálogo → el nombre del catálogo en Gestión → Catálogos. Sin esto, \"salas\" o \"sofás\" no encontraban \"Sofas y modulares\" (2026-10-29). El catálogo outlet se llama \"Catalogo Oulet\" en el sistema.",
+    "alias": {
+      "salas": "sofas y modulares",
+      "juego de sala": "sofas y modulares",
+      "sofas": "sofas y modulares",
+      "muebles de sala": "sofas y modulares",
+      "outlet": "catalogo oulet",
+      "liquidacion": "catalogo oulet",
+      "camarote": "camarotes",
+      "literas": "camarotes",
+      "nocheros": "mesas de noche",
+      "bifes": "cajoneros y bifes"
+    }
   },
   "mapaCategoriasBD": {
     "comedores": "bases_comedores",
@@ -143,12 +156,16 @@
     "descuentos": {
       "_porcentaje": "Confirmado por el dueño el 2026-10-08: pagando en efectivo o transferencia hay 5 % de descuento, y el agente lo puede decir y usar para cerrar. Puede haber un poco más, pero eso lo decide un asesor humano: el agente nunca promete más del 5 %. La cifra con descuento la calcula el código (negocio.conDescuentoEfectivo), no el modelo.",
       "porcentaje": 5,
+      "_soloEnExistencia": "Dueño, 2026-10-20: el 5 % se da SIEMPRE pagando en efectivo o transferencia, pero solo en productos en existencia. Si hay que fabricarlo, no hay descuento. La existencia sale del inventario del sistema de ventas (disponible − reservada en sedes activas).",
+      "soloEnExistencia": true,
       "masLoDecideAsesor": true,
       "aplicanCon": "pago en efectivo o transferencia bancaria",
       "noAplicanCon": "tarjeta de crédito ni con ADDI",
       "valorLoConfirmaAsesor": false
     },
-    "promocionVigente": null
+    "promocionVigente": null,
+    "_promocionesDelSistema": "Dueño, 2026-10-20: las promociones salen del sistema de ventas (Inventario → Promociones, tablas promociones + promocion_tienda). Elena ofrece todas las vigentes diciendo en qué tiendas corren, solo para productos en existencia, y el 5 % por efectivo/transferencia se suma sobre el precio de promoción. Ver core/promociones.js.",
+    "promocionesDelSistema": true
   },
   "envios": {
     "haceDomicilios": true,
@@ -164,7 +181,9 @@
     "restauraciones": true,
     "notaVentaPorUnidad": "Sillas se venden por UNIDAD, separadas de las bases de comedor",
     "_notaVentaPorUnidadEn": "En los productos de estas categorías, la búsqueda trae la nota para que la asesora la diga siempre (en la evaluación con el modelo real a veces se le olvidaba).",
-    "notaVentaPorUnidadEn": ["bases_comedores"]
+    "notaVentaPorUnidadEn": ["bases_comedores"],
+    "_telasMascotas": "Dueño, 2026-10-29: 'en su gran mayoría' son amigables con mascotas (no decir 'todas').",
+    "telasMascotas": "La gran mayoría de nuestras telas son amigables con las mascotas"
   },
   "porQueNosotros": {
     "_comentario": "Argumentos reales para que la asesora defienda el valor frente al precio o a la competencia sin inventar. Solo cosas que la empresa cumple siempre.",
@@ -174,8 +193,9 @@
       "Lo que no esté en tienda lo fabricamos al mismo precio",
       "También restauramos y retapizamos muebles",
       "Envío gratis en Quindío y Risaralda (Pereira)",
-      "5 % de descuento pagando en efectivo o transferencia",
+      "5 % de descuento pagando en efectivo o transferencia en productos en existencia",
       "Crédito con ADDI para pagar a cuotas",
+      "La gran mayoría de nuestras telas son amigables con las mascotas",
       "Tiendas físicas en Armenia y Pereira para verlos y probarlos en persona"
     ]
   },
@@ -205,7 +225,7 @@
     "carrito_abandonado": "¡Hola{nombre}! 😊 Te quedó {producto} en el carrito. ¿Seguimos con eso? Te resuelvo cualquier duda, te mando más fotos o, si prefieres, te paso con un asesor 🙌",
     "_interes_pendiente": "Para el cliente que dijo 'lo voy a pensar' (o puso otro freno) y se fue sin carrito, pedido ni cita. Una sola vez, dentro de la ventana de 24 h.",
     "horasInteresPendiente": 20,
-    "interes_pendiente": "¡Hola{nombre}! 😊 Ayer quedamos hablando de {producto}. ¿Pudiste pensarlo? Si te ayuda, te mando más fotos, te comparo opciones o te paso con un asesor. Pagando en efectivo o transferencia tienes 5 % de descuento 🙌"
+    "interes_pendiente": "¡Hola{nombre}! 😊 Ayer quedamos hablando de {producto}. ¿Pudiste pensarlo? Si te ayuda, te mando más fotos, te comparo opciones o te paso con un asesor. Y si está en existencia, pagando en efectivo o transferencia tienes 5 % de descuento 🙌"
   },
 
   "contactos": {

@@ -74,7 +74,7 @@ async function _send(psid, message) {
   )
 
   try {
-    await conReintentos(enviar, {
+    const res = await conReintentos(enviar, {
       intentos: 3,
       baseMs:   1500,
       contexto: `IG _send psid=${psid}`,
@@ -86,7 +86,9 @@ async function _send(psid, message) {
         return code === 613 || (status >= 500 && status < 600) || !e.response
       },
     })
-    return true
+    // El id del mensaje enviado (para saber a qué foto responde el cliente después). Quien
+    // solo necesita saber si salió lo usa como booleano: un string no vacío es verdadero.
+    return res?.data?.message_id || true
   } catch (e) {
     const err = e.response?.data?.error
     console.error('[IG] sendMessage error:', err ?? e.message)
@@ -227,8 +229,21 @@ async function getMediaDetails(mediaId) {
   }
 }
 
+// Nuestras historias publicadas ahora (solo duran 24 h). Las archiva index.js
+// (archivarHistorias) para poder responder cuando un cliente contesta una ya vencida.
+// Lanza si la API falla: quien llama decide si avisar.
+async function getHistoriasActivas() {
+  const { data } = await axios.get(`${BASE}/me/stories`, {
+    params: {
+      fields:       'id,media_type,media_url,thumbnail_url,caption,timestamp',
+      access_token: TOKEN(),
+    },
+  })
+  return data?.data ?? []
+}
+
 module.exports = {
   sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo,
-  downloadMediaToBuffer, getMediaDetails, expiracionToken,
+  downloadMediaToBuffer, getMediaDetails, getHistoriasActivas, expiracionToken,
   sendQuickReplies, sendCarousel, sendPrivateReplyToComment, replyToComment,
 }

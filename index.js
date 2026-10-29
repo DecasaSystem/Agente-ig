@@ -24,6 +24,7 @@ const imgHash = require('./image-hash')
 const fechas  = require('./fechas')
 const reintentos = require('./reintentos')
 const negocio = require('./negocio')
+const promociones = require('./promociones')
 const horario = require('./horario')
 const { construirSystemPrompt } = require('./prompt')
 const vigilancia = require('./vigilancia')
@@ -142,7 +143,7 @@ const NOMBRES_CATEGORIA = negocio.CATEGORIAS
 // foto y lo compara con las fotos de los productos de ESA categoría. Devuelve el bloque
 // de contexto para el modelo, o null si no aportó nada (sin inventario, error de red…).
 // Nunca rompe el flujo: si falla, la foto sigue su camino al modelo como antes.
-async function identificarImagenPorCategoria(psid, imagen) {
+async function identificarImagenPorCategoria(psid, imagen, opcionesContexto = {}) {
   if (!inventario.length) return null
   const claves = [...new Set(inventario.map(p => p.subcategoria).filter(Boolean))]
   const categorias = claves.map(clave => ({ clave, nombre: NOMBRES_CATEGORIA[clave] ?? clave }))
@@ -163,7 +164,7 @@ async function identificarImagenPorCategoria(psid, imagen) {
     // formatProducto espera el producto con el formato del inventario de IG (precio
     // numérico y variantes): se busca por nombre para no perder esos campos.
     const formatear = p => formatProducto(inventario.find(x => x.nombre === p.nombre) ?? p)
-    return visionCatalogo.construirContextoVision(resultado, formatear)
+    return visionCatalogo.construirContextoVision(resultado, formatear, opcionesContexto)
   } catch (e) {
     console.warn('[vision-catalogo] no se pudo identificar la imagen:', e.message)
     return null
@@ -191,9 +192,49 @@ async function identificarProductoPorImagen(buffer) {
 // (ver catalogos.js).
 const catalogos = crearCatalogos({
   pool: db.pool,
-  opciones: { urlBase: negocio.urlCatalogoPublico, mapaCategoriasBD: negocio.mapaCategoriasBD, etiquetas: negocio.CATEGORIAS },
+  opciones: { urlBase: negocio.urlCatalogoPublico, mapaCategoriasBD: negocio.mapaCategoriasBD, etiquetas: negocio.CATEGORIAS, alias: negocio.aliasCatalogos },
   alertar,
 })
+// Guarda una copia de cada historia nuestra mientras está publicada: Instagram solo deja
+// verla 24 h y los clientes responden después (caso real del 2026-10-29, historia ya
+// vencida). Una imagen reducida (lado mayor 768 px, JPEG) y el texto, de a una por vez
+// por la memoria de Render (512 MB). Nunca rompe nada: si la API falla, se avisa una vez.
+let avisoHistoriasFallo = false
+async function archivarHistorias() {
+  try {
+    const historias = await ig.getHistoriasActivas()
+    avisoHistoriasFallo = false
+    const ya = await db.historiasGuardadas(historias.map(h => String(h.id)))
+    for (const h of historias) {
+      if (ya.has(String(h.id))) continue
+      let imagen = null
+      const url = h.media_type === 'VIDEO' ? h.thumbnail_url : h.media_url
+      if (url) {
+        try {
+          const { buffer, contentType } = await ig.downloadMediaToBuffer(url)
+          if (contentType?.startsWith('image/')) {
+            const sharp = require('sharp')
+            imagen = await sharp(buffer).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer()
+          }
+        } catch (e) { console.warn('[historias] no se pudo bajar la imagen de', h.id, e.message) }
+      }
+      await db.guardarHistoria({
+        storyId: h.id, mediaType: h.media_type, caption: h.caption ?? null,
+        imagen, mime: imagen ? 'image/jpeg' : null,
+        publicadaEn: h.timestamp ? new Date(h.timestamp) : null,
+      })
+      log.info('historia_archivada', { story_id: String(h.id), con_imagen: Boolean(imagen) })
+    }
+    await db.purgarHistorias(30)
+  } catch (e) {
+    const msg = e.response?.data?.error?.message ?? e.message
+    if (!avisoHistoriasFallo) {
+      avisoHistoriasFallo = true
+      console.warn('[historias] no se pudieron archivar:', msg)
+    }
+  }
+}
+
 async function cargarCatalogos() {
   try {
     await catalogos.cargar()
@@ -235,10 +276,10 @@ const correr = (psid, ...args) =>
 
 // Punto de entrada desde el webhook. Acumula todo lo que llegue en la ventana de
 // debounce y lo procesa como un solo turno.
-function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false) {
+function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false, respondeA = null) {
   let buf = buffers.get(psid)
   if (!buf) {
-    buf = { textos: [], adjuntos: null, esStory: false, storyUrl: null, storyId: null, noSoportado: false, timer: null }
+    buf = { textos: [], adjuntos: null, esStory: false, storyUrl: null, storyId: null, noSoportado: false, respondeA: null, timer: null }
     buffers.set(psid, buf)
   }
 
@@ -248,6 +289,7 @@ function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, 
   if (adjuntos?.length) buf.adjuntos = adjuntos
   if (esStoryReply) { buf.esStory = true; buf.storyUrl = storyUrl; buf.storyId = storyId }
   if (noSoportado) buf.noSoportado = true
+  if (respondeA) buf.respondeA = respondeA
 
   if (buf.timer) clearTimeout(buf.timer)
   buf.timer = setTimeout(() => {
@@ -260,6 +302,7 @@ function recibirMensaje(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, 
       buf.storyUrl,
       buf.storyId,
       buf.noSoportado,
+      buf.respondeA,
     ))
   }, DEBOUNCE_MS)
 }
@@ -600,7 +643,7 @@ const TOOLS = [
   },
   {
     name: 'enviar_catalogo',
-    description: "Envía al cliente el catálogo de una categoría: el catálogo de esa categoría (los de Gestión → Catálogos, que se ven como revista) y, si no hay, la página en línea de esa categoría con fotos y precios actualizados. Sirve para CUALQUIER categoría que se venda (camas, sofás, comedores, cunas, relojes, bancas…), no solo las de la lista. Úsala cuando el cliente pida ver el catálogo o quiera explorar todas las opciones de una categoría.",
+    description: "Envía al cliente el catálogo de una categoría: el catálogo de esa categoría (los de Gestión → Catálogos, que se ven como revista) y, si no hay, la página en línea de esa categoría con fotos y precios actualizados. Sirve para CUALQUIER categoría que se venda (camas, sofás, comedores, cunas, relojes, bancas…), no solo las de la lista. Úsala cuando el cliente pida ver el catálogo o quiera explorar todas las opciones de una categoría. Si pide VARIOS a la vez (\"el de comedores y el de salas\"), llámala una vez por cada catálogo, en el mismo turno.",
     parameters: {
       type: 'object',
       properties: {
@@ -768,6 +811,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
   // Para la revisión antes de enviar (verificacion.js): qué herramientas se llamaron en el
   // turno y qué devolvieron. Una sola corrección por turno.
   const herramientasTurno = []
+  let productoTurno = null // del que se habló, para el "¿pudiste pensarlo?" de mañana
   const resultadosTurno = []
   let yaCorregida = false
 
@@ -820,6 +864,13 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       // Si en esta respuesta le pidió los datos, no se los vuelve a pedir por su cuenta.
       if (notaDatos && memoria.pidioDatos(texto)) actualizarPerfil(psid, { datos_pedidos: true }).catch(() => {})
       logUsoTokens(psid, tokPrompt, tokCompletion, round + 1, tokCacheados)
+      // Le mostró productos y no cerró nada: si se queda callado, mañana Elena lo retoma
+      // (seguimientos.debeProgramarInteres). Se corre con cada turno así.
+      if (seguimientos.debeProgramarInteres(herramientasTurno)) {
+        getCarrito(psid).then(carrito => seguimientos.programarInteresPendiente(depsSeguimientos(), {
+          destinatario: psid, producto: productoTurno, nombre: userInfo?.nombre ?? null, tieneCarrito: carrito.length > 0,
+        })).catch(e => console.warn('[seguimientos] interés pendiente no programado:', e.message))
+      }
       return texto
     }
 
@@ -833,6 +884,7 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       const result = await ejecutarTool(psid, nombre, args, userInfo)
       const resultStr = String(result ?? 'OK')
       herramientasTurno.push(nombre)
+      if (seguimientos.HERRAMIENTAS_DE_INTERES.has(nombre)) productoTurno = seguimientos.productoDeArgs(args) ?? productoTurno
       resultadosTurno.push(resultStr)
       for (const n of extraerPrecios(resultStr)) preciosVistos.add(n)
       messages.push({
@@ -1129,10 +1181,25 @@ function formatProducto(p) {
   const pesos = n => `$${Number(n ?? 0).toLocaleString('es-CO')}`
   // Lo que paga con el descuento por efectivo/transferencia (5 %, negocio.json). Lo calcula
   // el código para que Elena solo repita la cifra, nunca la invente.
+  // Solo para lo que está en existencia: lo que se fabrica no lleva descuento (dueño,
+  // 2026-10-20); en ese caso va la nota de negocio.notaSinDescuento.
+  const conDescuento = negocio.aplicaDescuentoEfectivo(p)
   const efectivo = n => {
-    const v = negocio.conDescuentoEfectivo(Number(n))
+    const v = conDescuento && negocio.conDescuentoEfectivo(Number(n))
     return v ? ` (pagando en efectivo o transferencia: ${pesos(v)})` : ''
   }
+  const notaDescuento = info.precio_requiere_asesor ? null : negocio.notaSinDescuento(p)
+  // Promoción del sistema de ventas (core/promociones.js): si le toca a esta versión y el
+  // producto está en existencia, el precio que vale es el de promoción y el 5 % se calcula
+  // sobre él. El precio de lista se sigue mostrando para que Elena diga "antes / ahora".
+  const precioDe = (lista, variante = null) => {
+    const r = promociones.promoPara(p, variante)
+    return r?.aplica
+      ? `${pesos(r.precioLista)} → EN PROMOCIÓN ${pesos(r.precioPromo)}${efectivo(r.precioPromo)}`
+      : `${pesos(lista)}${efectivo(lista)}`
+  }
+  const varianteDeOpcion = opcion => (p.variantes ?? []).find(v => v.etiqueta === opcion) ?? null
+  const promosTexto = promociones.resumenPromociones(p).map(r => `\n[${promociones.lineaPromocion(r)}]`).join('')
   let linea
   if (info.precio_requiere_asesor) {
     // Varios tipos de variante con precio: el sistema suma lo elegido en cada uno y esa
@@ -1140,9 +1207,9 @@ function formatProducto(p) {
     // la ficha salía con "hasta $undefined".
     linea = `Precio: desde ${pesos(info.precio_desde)} (depende de la combinación de ${info.tipos_de_variante.join(' y ')})\nOpciones: ${info.variantes.map(v => `${v.tipo}: ${v.opcion}`).join(' | ')}\n[${info.nota_variantes}]`
   } else if (info.precio === null) {
-    linea = `Precio: desde ${pesos(info.precio_desde)} hasta ${pesos(info.precio_hasta)} (según la opción)\nOpciones: ${info.variantes.map(v => `${v.opcion} → ${pesos(v.precio)}${efectivo(v.precio)}`).join(' | ')}\n[No des un precio único: pregúntale cuál opción quiere y dale el precio de esa]`
+    linea = `Precio: desde ${pesos(info.precio_desde)} hasta ${pesos(info.precio_hasta)} (según la opción)\nOpciones: ${info.variantes.map(v => `${v.opcion} → ${precioDe(v.precio, varianteDeOpcion(v.opcion))}`).join(' | ')}\n[No des un precio único: pregúntale cuál opción quiere y dale el precio de esa]`
   } else {
-    linea = `Precio: ${pesos(p.precio)}${efectivo(p.precio)}${info.opciones ? `\nDisponible en: ${info.opciones.join(', ')}` : ''}`
+    linea = `Precio: ${precioDe(p.precio)}${info.opciones ? `\nDisponible en: ${info.opciones.join(', ')}` : ''}`
   }
   const juego = infoVentaPorJuego(p, Number(p.precio ?? 0))
   if (juego) linea += `\n[${juego.nota_juego}${juego.precio_pieza_suelta ? ` Pieza suelta: ${pesos(juego.precio_pieza_suelta)}.` : ''}${juego.piezas_por_opcion ? ` ${juego.piezas_por_opcion.join('; ')}.` : ''}]`
@@ -1150,7 +1217,34 @@ function formatProducto(p) {
   const descripcion = p.descripcion ? `\nDescripción: ${String(p.descripcion).slice(0, 300)}` : ''
   // "Las sillas se venden aparte" en las bases de comedor (negocio.notaDeVenta).
   const notaVenta = negocio.notaDeVenta(p.subcategoria ?? p.categoria)
-  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}${notaVenta ? `\n[${notaVenta}]` : ''}`
+  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}${notaVenta ? `\n[${notaVenta}]` : ''}${notaDescuento ? `\n[${notaDescuento}]` : ''}${promosTexto}`
+}
+
+// Producto del inventario de una línea del carrito. El carrito guarda "NOMBRE (variante)",
+// así que se prueba el nombre tal cual y luego sin el paréntesis final.
+function productoDeItemCarrito(nombreItem) {
+  const base = String(nombreItem ?? '').replace(/\s*\([^)]*\)\s*$/, '')
+  for (const nombre of [nombreItem, base]) {
+    const n = normalize(String(nombre ?? ''))
+    const prod = inventario.find(p => normalize(p.nombre) === n)
+    if (prod) return prod
+  }
+  return null
+}
+
+// Total con el descuento por efectivo/transferencia: el % solo se aplica a lo que está en
+// existencia (negocio.totalConDescuentoEfectivo). null si nada del carrito lo lleva.
+function totalCarritoConDescuento(items) {
+  return negocio.totalConDescuentoEfectivo(items.map(i => ({
+    nombre: i.producto,
+    valor: parsearPrecio(i.precio) * (i.cantidad || 1),
+    producto: productoDeItemCarrito(i.producto),
+  })))
+}
+
+// Texto para el cliente de lo que quedó sin descuento porque se fabrica.
+function lineaSinDescuento(r) {
+  return r?.sinDescuento?.length ? `\n_Sin descuento (se fabrica sobre pedido): ${r.sinDescuento.join(', ')}_` : ''
 }
 
 function parsearPrecio(p) {
@@ -1253,10 +1347,13 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       await recordarMostrados(psid, [resultado])
       evento(psid, 'producto_visto', resultado.nombre)
       if (resultado.imagen) {
-        await ig.sendImageMessage(psid, resultado.imagen)
+        // Se anota qué producto era cada foto: si el cliente la "responde", Elena sabe de cuál habla.
+        const mid1 = await ig.sendImageMessage(psid, resultado.imagen)
+        db.registrarMensajeEnviado({ mid: typeof mid1 === 'string' ? mid1 : null, psid, producto: resultado.nombre, imagenUrl: resultado.imagen })
         // Segunda foto del producto si existe (otro ángulo/detalle): antes se ignoraba.
         if (resultado.imagen2 && resultado.imagen2 !== resultado.imagen) {
-          await ig.sendImageMessage(psid, resultado.imagen2)
+          const mid2 = await ig.sendImageMessage(psid, resultado.imagen2)
+          db.registrarMensajeEnviado({ mid: typeof mid2 === 'string' ? mid2 : null, psid, producto: resultado.nombre, imagenUrl: resultado.imagen2 })
         }
         return `[Foto de ${resultado.nombre} enviada — ${etiquetaPrecio(resultado)}. Haz seguimiento de venta]`
       }
@@ -1283,6 +1380,8 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         buttons:   [{ type: 'postback', title: 'Me interesa 💬', payload: `INTERESA::${p.nombre}` }],
       }))
       const ok = await ig.sendCarousel(psid, elementos)
+      // Un carrusel es UN mensaje con varias tarjetas: si lo responden, se sabe entre cuáles.
+      db.registrarMensajeEnviado({ mid: typeof ok === 'string' ? ok : null, psid, producto: encontrados.map(p => p.nombre).join(' | ') })
       await db.setUltimoProducto(psid, { nombre: encontrados[0].nombre, imagen: encontrados[0].imagen ?? null, ts: Date.now() })
       await recordarMostrados(psid, encontrados)
       for (const p of encontrados) evento(psid, 'producto_visto', p.nombre)
@@ -1417,7 +1516,14 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         await actualizarPerfil(psid, { categorias_interes: [String(args.categoria).trim().toLowerCase()] })
         sincronizarClienteRed(psid, userInfo)
       }
-      return `[Catálogo de ${encontrado.nombre} enviado exitosamente (${encontrado.url}). El cliente ya recibió el enlace: NO lo repitas. Sigue con UNA pregunta para entender qué busca (espacio, medida, estilo o presupuesto)]`
+      // Las promociones de esa categoría van con el catálogo: el asesor las dice sin que se
+      // las pregunten ("tenemos 20 % en los existentes", caso real del 2026-10-29).
+      const promosCat = promociones.promocionesDeProductos(inventario.filter(p =>
+        catalogos.delPedido(args.categoria ?? '', [p.subcategoria, NOMBRES_CATEGORIA[p.subcategoria]], encontrado.nombre)))
+      const textoPromos = promosCat.length
+        ? ` En esta categoría HAY PROMOCIÓN en lo que está en existencia:\n${promosCat.join('\n')}\nMenciónaselo en este mismo mensaje, en una frase y sin que lo pregunte (la rebaja y en qué tiendas), para que aproveche.`
+        : ''
+      return `[Catálogo de ${encontrado.nombre} enviado exitosamente (${encontrado.url}). El cliente ya recibió el enlace: NO lo repitas.${textoPromos} Sigue con UNA pregunta para entender qué busca (espacio, medida, estilo o presupuesto)]`
     }
 
     case 'reportar_imagen_no_identificada': {
@@ -1592,8 +1698,9 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // Antes esto notificaba a Redes: mirar el carrito no es pedir ayuda humana, y
       // cada vistazo creaba una tarjeta "pendiente" nueva para el equipo de ventas.
       // El pedido de verdad se notifica en confirmar_pedido; la ayuda, en solicitar_asesor.
-      const totalEfectivoIG = negocio.conDescuentoEfectivo(total)
-      const lineaEfectivoIG = totalEfectivoIG ? `\n*Pagando en efectivo o transferencia (${negocio.porcentajeDescuentoEfectivo}% de descuento): $${totalEfectivoIG.toLocaleString('es-CO')}*` : ''
+      const descIG = totalCarritoConDescuento(items)
+      const totalEfectivoIG = descIG?.total
+      const lineaEfectivoIG = totalEfectivoIG ? `\n*Pagando en efectivo o transferencia (${negocio.porcentajeDescuentoEfectivo}% de descuento): $${totalEfectivoIG.toLocaleString('es-CO')}*${lineaSinDescuento(descIG)}` : ''
       return `🛍️ *Tu carrito:*\n${lista}\n\n*Total: $${total.toLocaleString('es-CO')}*${lineaEfectivoIG}\n\n¿Confirmamos la compra o quieres seguir viendo productos?`
     }
 
@@ -1633,9 +1740,21 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         etiquetaVariante = elegida.etiqueta
         precioFinal = `$${elegida.precio.toLocaleString('es-CO')}` // el precio manda desde la BD
       }
+      // Promoción del sistema de ventas: si le toca a esta versión y está en existencia, el
+      // carrito guarda el precio ya rebajado (como Nueva orden) y de qué promoción salió.
+      const varianteCarrito = preciosDistintos
+        ? encontrarVariante(prodInv, args.variante)
+        : (args.variante ? encontrarVariante(prodInv, args.variante) : null)
+      const promoCarrito = promociones.promoPara(prodInv, varianteCarrito)
+      const precioLista = precioFinal
+      let promocionCarrito = null
+      if (promoCarrito?.aplica) {
+        precioFinal = `$${promoCarrito.precioPromo.toLocaleString('es-CO')}`
+        promocionCarrito = `${promoCarrito.promo.nombre || 'Promoción'} ${promociones.textoRebaja(promoCarrito.promo)} (lista ${precioLista})`
+      }
       // Si el modelo pasó un precio distinto al real, se registra: es señal de que está
       // inventando importes y conviene revisar el prompt.
-      if (args.precio && parsearPrecio(args.precio) !== parsearPrecio(precioFinal)) {
+      if (args.precio && ![precioFinal, precioLista].some(p => parsearPrecio(args.precio) === parsearPrecio(p))) {
         alertar('Modelo pasó un precio distinto al de la BD en agregar_al_carrito', `psid=${psid} producto="${nombreReal}" modelo=${args.precio} bd=${precioFinal}`)
       }
       // El asesor tiene que ver que es un juego, no una pieza. Va DENTRO del mismo paréntesis
@@ -1656,7 +1775,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
         return `Actualicé *${nombreCarrito}* a ${nuevaCantidad} unidad${nuevaCantidad > 1 ? 'es' : ''} en tu carrito 🛍️\nTotal: *$${total.toLocaleString('es-CO')}*\n\n¿Agregamos algo más o confirmamos el pedido?`
       }
-      carrito.push({ producto: nombreCarrito, precio: precioFinal, cantidad: args.cantidad ?? 1 })
+      carrito.push({ producto: nombreCarrito, precio: precioFinal, cantidad: args.cantidad ?? 1, ...(promocionCarrito && { promocion: promocionCarrito }) })
       await setCarrito(psid, carrito)
 
       // Si no vuelve, se le escribe UNA vez al día siguiente (20 h: dentro de la ventana
@@ -1668,7 +1787,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         nombre:       userInfo?.nombre ?? null,
       }).catch(e => console.warn('[seguimientos] carrito abandonado no programado:', e.message))
       const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
-      return `¡Listo! 🛍️ *${nombreCarrito}* agregado al carrito por ${precioFinal}.\nTotal: *$${total.toLocaleString('es-CO')}* (${carrito.length} producto${carrito.length > 1 ? 's' : ''})\n\n¿Agregamos algo más o confirmamos el pedido?`
+      return `¡Listo! 🛍️ *${nombreCarrito}* agregado al carrito por ${precioFinal}${promocionCarrito ? ` (en promoción: ${promocionCarrito})` : ''}.\nTotal: *$${total.toLocaleString('es-CO')}* (${carrito.length} producto${carrito.length > 1 ? 's' : ''})\n\n¿Agregamos algo más o confirmamos el pedido?`
     }
 
     case 'quitar_del_carrito': {
@@ -1717,7 +1836,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const contactoPedido = resueltoPedido.contacto
       const total = carrito.reduce((s, i) => s + parsearPrecio(i.precio) * (i.cantidad || 1), 0)
       const resumen = carrito.map((i, idx) =>
-        `${idx + 1}. ${i.producto} × ${i.cantidad || 1} — $${parsearPrecio(i.precio).toLocaleString('es-CO')}`
+        `${idx + 1}. ${i.producto} × ${i.cantidad || 1} — $${parsearPrecio(i.precio).toLocaleString('es-CO')}${i.promocion ? ` [${i.promocion}]` : ''}`
       ).join('\n')
 
       // Persistir ANTES de confirmarle al cliente: la notificación a Redes puede
@@ -1736,8 +1855,10 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // Si dijo que paga en efectivo o transferencia, el total con el descuento (lo calcula
       // el código) va en el mensaje y en la tarjeta: el asesor ve lo que se le prometió.
       const pagaConDescuento = /efectivo|transfer|consignaci|nequi|daviplata/i.test(String((args ?? {}).forma_pago ?? ''))
-      const totalEfectivo = pagaConDescuento ? negocio.conDescuentoEfectivo(total) : null
-      const lineaEfectivo = totalEfectivo ? `Con ${negocio.porcentajeDescuentoEfectivo}% de descuento por pago en efectivo/transferencia: $${totalEfectivo.toLocaleString('es-CO')}` : null
+      // Solo lo que está en existencia lleva el descuento (lo que se fabrica, no).
+      const descPedido = pagaConDescuento ? totalCarritoConDescuento(carrito) : null
+      const totalEfectivo = descPedido?.total ?? null
+      const lineaEfectivo = totalEfectivo ? `Con ${negocio.porcentajeDescuentoEfectivo}% de descuento por pago en efectivo/transferencia: $${totalEfectivo.toLocaleString('es-CO')}${descPedido.sinDescuento.length ? ` (sin descuento por ser para fabricar: ${descPedido.sinDescuento.join(', ')})` : ''}` : null
       // Ciudad y forma de pago, si las dio: el asesor sabe de una vez si el envío es gratis
       // y si aplica el descuento (efectivo/transferencia).
       const datosCierre = [
@@ -1753,7 +1874,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       )
       await setCarrito(psid, [])
       const avisoPedido = avisoFueraHorario()
-      const lineaEfectivoCliente = totalEfectivo ? `\n*Pagando en efectivo o transferencia (${negocio.porcentajeDescuentoEfectivo}% de descuento): $${totalEfectivo.toLocaleString('es-CO')}*` : ''
+      const lineaEfectivoCliente = totalEfectivo ? `\n*Pagando en efectivo o transferencia (${negocio.porcentajeDescuentoEfectivo}% de descuento): $${totalEfectivo.toLocaleString('es-CO')}*${lineaSinDescuento(descPedido)}` : ''
       await enviarTextoIA(psid,
         `¡Pedido confirmado! 🎉\n\n${resumen}\n\n*Total: $${total.toLocaleString('es-CO')}*${lineaEfectivoCliente}\n\nUn asesor de ${negocio.nombreEmpresa} te contactará pronto para coordinar el pago y la entrega. ¡Gracias por elegir ${negocio.nombreEmpresa}! 😊${avisoPedido ? `\n\n${avisoPedido}` : ''}`
       )
@@ -1978,6 +2099,36 @@ function esVisualizacion(texto) {
 
 // ── Manejador principal de mensajes ───────────────────────────────────────────
 
+// Qué le decimos al modelo cuando el cliente responde a un mensaje nuestro (reply_to.mid).
+// Devuelve { ctx, imagen }: imagen = { base64, mime } cuando solo se conoce la foto (las
+// que manda el asesor), para que pase por el hash y la visión como cualquier otra.
+async function contextoDeRespuesta(psid, mid, { conImagen = true } = {}) {
+  const previo = await db.getMensajeEnviado(mid, psid)
+  const nombres = previo?.producto ? previo.producto.split(' | ') : []
+  const prod = nombres.length === 1 ? buscarProductoExacto(nombres[0]) : null
+  let ctx = null
+  let imagen = null
+  if (prod) {
+    ctx = `[El cliente está RESPONDIENDO a la foto de ${prod.nombre} que le enviamos: se refiere a ESE producto. Producto en inventario:\n${formatProducto(prod)}]`
+  } else if (nombres.length > 1) {
+    ctx = `[El cliente está respondiendo al carrusel que le enviamos con: ${nombres.join(', ')}. Si por su mensaje no queda claro cuál le gustó, pregúntaselo con amabilidad.]`
+  } else if (previo?.imagen_url && conImagen) {
+    try {
+      const { buffer, contentType } = await ig.downloadMediaToBuffer(previo.imagen_url)
+      if (contentType?.startsWith('image/')) {
+        imagen = { base64: buffer.toString('base64'), mime: contentType }
+        ctx = '[El cliente está RESPONDIENDO a una foto que le enviamos nosotros (es la imagen adjunta, de nuestro catálogo): se refiere a ese producto.]'
+      }
+    } catch { /* la URL de Meta pudo vencer: se sigue sin imagen */ }
+  }
+  if (!ctx && previo?.texto) ctx = `[El cliente está respondiendo a este mensaje nuestro: "${previo.texto}"]`
+  if (!ctx) {
+    ctx = '[El cliente está respondiendo a una foto o mensaje anterior nuestro que no podemos ver. Si por la conversación no queda claro de qué producto habla, NO adivines: pregúntale con amabilidad cuál es (el nombre, o que te reenvíe la foto o una captura).]'
+  }
+  log.info('respuesta_a_mensaje', { encontrado: Boolean(previo), con_producto: Boolean(prod), con_imagen: Boolean(imagen) })
+  return { ctx, imagen }
+}
+
 async function handleMessage(...args) {
   // Todo lo que ocurra dentro de este turno queda etiquetado con el mismo id, el canal y el
   // cliente (ver core/log.js): así se puede reconstruir qué pasó con una persona concreta
@@ -1985,7 +2136,7 @@ async function handleMessage(...args) {
   return log.conContexto({ canal: 'instagram', cliente: args[0] }, () => _handleMessage(...args))
 }
 
-async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false) {
+async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, storyId, noSoportado = false, respondeA = null) {
   const userInfo = await getUserInfoCache(psid)
   await db.getOrCreateClienteByPsid(psid, userInfo.username, userInfo.nombre)
 
@@ -2059,6 +2210,9 @@ async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, sto
   let mensajeAI = texto ?? ''
   let imageBase64 = null  // imagen para visión de la IA
   let imageMimeType = 'image/jpeg'
+  // La imagen viene de algo que el cliente compartió (publicación, historia) y puede ser de
+  // OTRA cuenta: la visión no debe afirmar que es nuestro producto (vision-catalogo.js).
+  let puedeSerDeOtraCuenta = false
 
   // Post compartido en DM (type: ig_post) — buscar producto + descargar imagen
   if (adjuntos?.length) {
@@ -2066,6 +2220,7 @@ async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, sto
     if (postCompartido) {
       const caption  = postCompartido.payload?.title ?? ''
       const urlImagen = postCompartido.payload?.url ?? null  // CDN URL directa
+      puedeSerDeOtraCuenta = true
 
       if (urlImagen) {
         try {
@@ -2085,9 +2240,9 @@ async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, sto
       if (prodCaption) {
         mensajeAI = `[El cliente compartió la publicación: "${caption}". Producto en inventario:\n${formatProducto(prodCaption)}]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
       } else if (imageBase64) {
-        mensajeAI = `[El cliente compartió una publicación de ${negocio.cfg.empresa.instagram}${caption ? `: "${caption}"` : ''}. El texto no dice qué producto es, pero tienes la imagen adjunta: identifica el artículo que se ve ahí (puede ser un reloj, un espejo, una lámpara o cualquier objeto decorativo, no solo muebles grandes) y búscalo con buscar_productos. Si no lo reconoces con seguridad, pregúntale al cliente cuál le interesó. NO des por hecho ningún producto.]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
+        mensajeAI = `[El cliente compartió una publicación${caption ? `: "${caption}"` : ''}. Puede ser nuestra o de OTRA cuenta: no des por hecho que es un producto nuestro. El texto no dice qué producto es, pero tienes la imagen adjunta: identifica el artículo que se ve ahí (puede ser un reloj, un espejo, una lámpara o cualquier objeto decorativo, no solo muebles grandes) y búscalo con buscar_productos. Si no lo reconoces con seguridad, pregúntale al cliente cuál le interesó. NO des por hecho ningún producto.]\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
       } else {
-        mensajeAI = `[El cliente compartió una publicación de ${negocio.cfg.empresa.instagram}${caption ? `: "${caption}"` : ''}, pero no pudimos ver la imagen ni identificar el producto. NO adivines: pregúntale qué artículo le llamó la atención o pídele una foto.]\n${mensajeAI || 'Quiero más información sobre esto'}`
+        mensajeAI = `[El cliente compartió una publicación${caption ? `: "${caption}"` : ''} (puede ser nuestra o de otra cuenta), pero no pudimos ver la imagen ni identificar el producto. NO adivines: pregúntale qué artículo le llamó la atención o pídele una foto.]\n${mensajeAI || 'Quiero más información sobre esto'}`
       }
     }
 
@@ -2142,6 +2297,31 @@ async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, sto
       }
     }
 
+    // Adjunto de un tipo que no manejamos arriba: así llega, por ejemplo, una HISTORIA de
+    // otra cuenta que el cliente reenvía (caso real del 2026-10-29: "¿qué valor tiene esa
+    // cama en 1.40?"). Antes se ignoraba y Elena contestaba sin ver la foto. Si trae una URL
+    // de imagen, se baja para la visión; si no, se le dice que no la vimos.
+    const TIPOS_CONOCIDOS = ['image', 'ig_post', 'share', 'video', 'reel', 'ig_reel', 'audio']
+    const otroAdj = adjuntos.find(a => !TIPOS_CONOCIDOS.includes(a.type))
+    if (otroAdj) {
+      log.info('adjunto_tipo_desconocido', { tipo: otroAdj.type, con_url: Boolean(otroAdj.payload?.url) })
+      let vista = Boolean(imageBase64)
+      if (!imageBase64 && otroAdj.payload?.url) {
+        try {
+          const { buffer, contentType } = await ig.downloadMediaToBuffer(otroAdj.payload.url)
+          if (contentType?.startsWith('image/')) {
+            imageBase64 = buffer.toString('base64')
+            imageMimeType = contentType
+            vista = true
+          }
+        } catch (e) { console.warn('[adjunto] no se pudo descargar:', e.message) }
+      }
+      puedeSerDeOtraCuenta = true
+      mensajeAI = vista
+        ? `[El cliente compartió una historia o publicación de Instagram que puede ser de OTRA cuenta (no la publicamos nosotros). Mira la imagen adjunta: NO digas que es un producto nuestro; busca en nuestro catálogo lo más parecido y ofréceselo ("tenemos uno muy parecido"). Si quiere uno igual al de la foto, en ${negocio.nombreEmpresa} lo fabricamos: ofrécele cotizarlo con un asesor (personalización).]\n${mensajeAI || '¿Qué valor tiene esto?'}`
+        : `[El cliente compartió algo de Instagram (una historia o publicación, posiblemente de otra cuenta) que NO pudimos ver. NO adivines de qué producto habla: pídele con amabilidad una captura o que te describa el mueble (tipo, medidas, color). Recuerda que en ${negocio.nombreEmpresa} fabricamos a la medida.]\n${mensajeAI || 'Quiero información de esto'}`
+    }
+
     // Audio recibido — transcribir con Whisper
     const audioAdj = adjuntos.find(a => a.type === 'audio')
     if (audioAdj?.payload?.url) {
@@ -2192,8 +2372,45 @@ async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, sto
         } catch { /* continuar sin imagen */ }
       }
     }
+    // Meta no siempre deja consultar la historia por su id (getMediaDetails devuelve
+    // null), pero el webhook trae reply_to.story.url, la URL directa de la historia.
+    // Antes no se usaba: Elena quedaba sin ver qué producto era y tenía que adivinar.
+    if (!imageBase64 && storyUrl) {
+      try {
+        const { buffer, contentType } = await ig.downloadMediaToBuffer(storyUrl)
+        if (contentType?.startsWith('image/')) {
+          imageBase64 = buffer.toString('base64')
+          imageMimeType = contentType
+        }
+      } catch { /* continuar sin imagen */ }
+    }
+    // Historia ya vencida (más de 24 h): Instagram ya no la entrega, pero la guardamos
+    // mientras estuvo publicada (archivarHistorias).
+    if (storyId && (!imageBase64 || !storyCtx)) {
+      const copia = await db.getHistoria(storyId)
+      if (copia) {
+        if (!storyCtx && copia.caption) storyCtx = ` La historia decía: "${copia.caption}".`
+        if (!imageBase64 && copia.imagen) {
+          imageBase64 = Buffer.from(copia.imagen).toString('base64')
+          imageMimeType = copia.mime || 'image/jpeg'
+        }
+        log.info('historia_desde_copia', { story_id: String(storyId), con_imagen: Boolean(copia.imagen) })
+      }
+    }
+    if (!imageBase64 && !storyCtx) {
+      storyCtx = ' NO pudimos ver la historia ni saber qué producto mostraba. NO adivines: pregúntale con amabilidad qué producto de la historia le interesó o pídele una captura.'
+    }
     const prefijo = `[El cliente respondió a una historia de ${negocio.cfg.empresa.instagram}.${storyCtx}]`
     mensajeAI = `${prefijo} ${mensajeAI || 'Quiero más información'}`
+  }
+
+  // El cliente respondió a un mensaje nuestro (caso real del 2026-10-29: el asesor le
+  // mandó varias fotos de comedores y ella contestó "Nos gustó este comedor y..." sobre
+  // una). El webhook solo trae el mid; lo que era se busca en ig_mensajes_enviados.
+  if (respondeA && !esStoryReply) {
+    const r = await contextoDeRespuesta(psid, respondeA, { conImagen: !imageBase64 })
+    if (r.imagen) { imageBase64 = r.imagen.base64; imageMimeType = r.imagen.mime }
+    mensajeAI = `${r.ctx}\n${mensajeAI || '¿Qué me cuentas de este?'}`
   }
 
   // Identificación por imagen: cubre el caso de un cliente que reenvía o captura
@@ -2218,7 +2435,7 @@ async function _handleMessage(psid, texto, adjuntos, esStoryReply, storyUrl, sto
       // (vision-catalogo.js) — clasifica qué mueble es y lo compara SOLO con las fotos
       // de esa categoría. Antes el modelo recibía la foto sin ninguna referencia visual
       // del catálogo y "parecido" lo decidía por los nombres en texto.
-      const contextoVision = await identificarImagenPorCategoria(psid, { base64: imageBase64, mime: imageMimeType })
+      const contextoVision = await identificarImagenPorCategoria(psid, { base64: imageBase64, mime: imageMimeType }, { puedeSerDeOtraCuenta })
       if (contextoVision) mensajeAI = `${contextoVision}\n${mensajeAI || '¿Qué quieres saber sobre este producto?'}`
     }
   }
@@ -2381,6 +2598,16 @@ async function procesarEventos(body) {
       if (esNuestro) {
         const psidCliente = event.recipient?.id // en un eco, el destinatario es el cliente
         const textoAsesor = event.message?.text
+        // Todo lo que sale de nuestro lado (IA o asesor) queda anotado por su mid, para
+        // entender después a qué le responde el cliente. Las fotos del asesor solo se
+        // conocen así: no pasan por enviar_foto.
+        const fotoEco = (event.message?.attachments ?? []).find(a => a.type === 'image' && a.payload?.url)
+        if (psidCliente && event.message?.mid && (fotoEco || textoAsesor)) {
+          db.registrarMensajeEnviado({
+            mid: event.message.mid, psid: psidCliente,
+            imagenUrl: fotoEco?.payload.url ?? null, texto: textoAsesor ?? null,
+          })
+        }
         if (psidCliente && textoAsesor) {
           // Si el texto no es uno de los que envió la IA, lo escribió una persona: se la
           // silencia en el acto, sin esperar a que nadie pulse "Tomar" en el panel.
@@ -2403,6 +2630,8 @@ async function procesarEventos(body) {
       const storyReply = !!event.message?.reply_to?.story
       const storyUrl   = event.message?.reply_to?.story?.url ?? null
       const storyId    = event.message?.reply_to?.story?.id ?? null
+      // El cliente deslizó y "respondió" a un mensaje nuestro (casi siempre una foto).
+      const respondeA  = storyReply ? null : (event.message?.reply_to?.mid ?? null)
       // Instagram marca así los mensajes cuyo contenido la API no puede recibir (a
       // veces fotos/adjuntos): llega sin imagen usable. Nos sirve para saber que el
       // cliente SÍ mandó algo (probablemente una foto) aunque no la podamos ver.
@@ -2423,7 +2652,7 @@ async function procesarEventos(body) {
       // cliente que no vimos su foto), así que no se descarta por venir "vacío".
       if (texto === null && !adjuntos?.length && !storyReply && !noSoportado) continue
 
-      recibirMensaje(psid, texto, adjuntos, storyReply, storyUrl, storyId, noSoportado)
+      recibirMensaje(psid, texto, adjuntos, storyReply, storyUrl, storyId, noSoportado, respondeA)
     }
   }
 }
@@ -2725,12 +2954,16 @@ async function startServer() {
   setInterval(() => {
     revisarSistemaDeVentas().catch(e => console.error('[contrato-bd] revisión:', e.message))
   }, 60 * 60 * 1000)
+  // Copia de nuestras historias: cada hora alcanza de sobra (duran 24 h).
+  archivarHistorias()
+  setInterval(archivarHistorias, 60 * 60 * 1000)
 
   // Limpiar historial antiguo al arrancar y luego cada 24 horas
   db.limpiarHistorialAntiguo(90).catch(e => console.error('[db] limpieza error:', e.message))
   setInterval(() => {
     db.limpiarHistorialAntiguo(90).catch(e => console.error('[db] limpieza error:', e.message))
     db.limpiarMidsAntiguos(2).catch(e => console.error('[db] limpieza mids error:', e.message))
+    db.purgarMensajesEnviados(30).catch(e => console.error('[db] limpieza mensajes enviados error:', e.message))
     db.limpiarGastoAntiguo().catch(e => console.error('[db] limpieza gasto error:', e.message))
   }, 24 * 60 * 60 * 1000)
 
@@ -2770,7 +3003,7 @@ module.exports = {
   TOOLS,
   extraerPrecios, validarPrecios, setPreciosInventarioParaPruebas,
   comentarioEsConsulta, payloadAIntent, normalize,
-  buscarEnInventario,
+  buscarEnInventario, cargarInventario, archivarHistorias,
   ejecutarTool,
   clasificarComentario, respuestaPublicaComentario, comentarioEsHostil, mensajePrivadoCatalogo,
   manejarComentario,
@@ -2781,6 +3014,8 @@ module.exports = {
   estadoHorario, MARGEN_CIERRE_TRANSFERENCIA_MIN,
   // Detección de asesor humano por los ecos de Instagram
   registrarEnviadoPorIA, ecoEsDeLaIA, textoCoincideCon, detectarAsesorHumano, normalizarEco,
+  // Respuestas del cliente a una foto o mensaje nuestro
+  contextoDeRespuesta,
   // Notificación al sistema de ventas (idempotencia entre el envío y la cola)
   notificarRedes, procesarColaNotificaciones,
   setInventarioParaPruebas: (arr) => { inventario = arr },

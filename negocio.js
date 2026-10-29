@@ -128,6 +128,44 @@ function conDescuentoEfectivo(valor) {
   return Math.round(n * (100 - porcentajeDescuentoEfectivo) / 100);
 }
 
+// El descuento solo vale para lo que hay en EXISTENCIA (dueño, 2026-10-20): lo que toca
+// fabricar no lleva el 5 %. `producto.existencias` son las unidades libres en las sedes
+// activas (disponible − reservada), las carga db.js con el inventario. Si no se sabe
+// (null/undefined) NO se ofrece la cifra con descuento: mejor no prometerla.
+const descuentoSoloEnExistencia = cfg.pagos?.descuentos?.soloEnExistencia === true;
+
+function aplicaDescuentoEfectivo(producto) {
+  if (!porcentajeDescuentoEfectivo) return false;
+  if (!descuentoSoloEnExistencia) return true;
+  return Number(producto?.existencias) > 0;
+}
+
+// Qué decirle al modelo de un producto SIN descuento. Va en la respuesta de la
+// herramienta (no en el prompt, regla 9 del AGENT.md).
+function notaSinDescuento(producto) {
+  if (!porcentajeDescuentoEfectivo || !descuentoSoloEnExistencia || aplicaDescuentoEfectivo(producto)) return null;
+  return producto?.existencias == null
+    ? `El ${porcentajeDescuentoEfectivo}% por efectivo/transferencia solo aplica si el producto está en existencia, y eso no lo sabemos ahora: no le des cifra con descuento, dile que un asesor lo confirma.`
+    : `Hoy no hay unidades en existencia: se fabrica sobre pedido y lo que se fabrica NO tiene el ${porcentajeDescuentoEfectivo}% de descuento por efectivo/transferencia. Díselo con naturalidad si habla de descuento o de forma de pago.`;
+}
+
+// Total con descuento de un carrito: el % se aplica solo a las líneas cuyo producto está
+// en existencia. lineas = [{ valor, producto }] (valor = precio × cantidad). Devuelve
+// null si ninguna línea lleva descuento.
+function totalConDescuentoEfectivo(lineas) {
+  let total = 0, conDescuento = 0;
+  const sinDescuento = [];
+  for (const l of lineas) {
+    const v = Number(l.valor) || 0;
+    total += v;
+    if (aplicaDescuentoEfectivo(l.producto)) conDescuento += v;
+    else sinDescuento.push(l.nombre ?? l.producto?.nombre);
+  }
+  const rebaja = conDescuento ? conDescuento - conDescuentoEfectivo(conDescuento) : 0;
+  if (!rebaja) return null;
+  return { total: total - rebaja, sinDescuento: sinDescuento.filter(Boolean) };
+}
+
 // Nota de venta que acompaña a los productos de ciertas categorías ("las sillas se venden
 // aparte" en las bases de comedor). Va en el resultado de la búsqueda, no solo en el prompt:
 // así el modelo la tiene delante justo cuando presenta el producto.
@@ -155,6 +193,8 @@ module.exports = {
   CATEGORIAS, clavesCategorias, categoriasParaPrompt,
   mapaCategoriasBD: cfg.mapaCategoriasBD ?? {},
   urlCatalogoPublico,
+  // Palabras del cliente → nombre del catálogo (catalogos.js → formasDelPedido).
+  aliasCatalogos: cfg.catalogoPublico?.alias ?? {},
   // Textos
   saludo: canal => cfg.saludos?.[canal] ?? '',
   sedesPublico: cfg.sedesPublico ?? '',
@@ -176,6 +216,7 @@ module.exports = {
   topeGastoDiarioUsd:         op.topeGastoDiarioUsd ?? 0,
   // Pagos
   porcentajeDescuentoEfectivo, conDescuentoEfectivo,
+  descuentoSoloEnExistencia, aplicaDescuentoEfectivo, notaSinDescuento, totalConDescuentoEfectivo,
   notaDeVenta,
   // Utilidades
   formatearMoneda,
