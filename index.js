@@ -199,6 +199,40 @@ const catalogos = crearCatalogos({
 // verla 24 h y los clientes responden después (caso real del 2026-10-29, historia ya
 // vencida). Una imagen reducida (lado mayor 768 px, JPEG) y el texto, de a una por vez
 // por la memoria de Render (512 MB). Nunca rompe nada: si la API falla, se avisa una vez.
+// ── Token de Instagram: renovación automática ─────────────────────────────────
+// El token de larga duración caduca a los 60 días y el agente se queda mudo. Antes solo
+// se avisaba días antes (vigilancia.js) y había que renovarlo a mano. Ahora se renueva
+// cada semana y el nuevo se guarda en la BD (ig_token), porque desde aquí no se puede
+// cambiar la variable de Render. Si en Render ponen un token distinto, manda ese.
+const DIAS_RENOVAR_TOKEN = 7
+let avisoTokenFallo = false
+async function mantenerToken({ ahora = Date.now() } = {}) {
+  const deVariable = process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+  if (!deVariable) return
+  const origen = crypto.createHash('sha256').update(deVariable).digest('hex')
+  const guardado = await db.getTokenGuardado()
+  const vigente = guardado && guardado.origen === origen &&
+    (!guardado.expira || new Date(guardado.expira).getTime() > ahora) ? guardado : null
+  ig.usarToken(vigente?.token ?? null)
+
+  const ultima = vigente?.renovado ? new Date(vigente.renovado).getTime() : 0
+  if (ahora - ultima < DIAS_RENOVAR_TOKEN * 24 * 60 * 60 * 1000) return
+  try {
+    const { token, expira } = await ig.renovarToken()
+    await db.guardarToken({ token, origen, expira: expira ? new Date(expira) : null })
+    ig.usarToken(token)
+    avisoTokenFallo = false
+    log.info('token_renovado', { expira: expira ? new Date(expira).toISOString().slice(0, 10) : '-' })
+  } catch (e) {
+    const msg = e.response?.data?.error?.message ?? e.message
+    console.warn('[token] no se pudo renovar el token de Instagram:', msg)
+    if (!avisoTokenFallo) {
+      avisoTokenFallo = true
+      alertar('No se pudo renovar el token de Instagram', `${msg}. El agente sigue con el token actual y lo vuelve a intentar mañana; la vigilancia avisa antes de que caduque.`)
+    }
+  }
+}
+
 let avisoHistoriasFallo = false
 async function archivarHistorias() {
   try {
@@ -2939,6 +2973,9 @@ const revisarSistemaDeVentas = crearRevisionSistema({
 async function startServer() {
   revisarSeguridad()
   await db.runMigrations()
+  // Antes de cualquier llamada a Meta: si hay un token renovado, se usa ese.
+  await mantenerToken().catch(e => console.error('[token] error:', e.message))
+  setInterval(() => { mantenerToken().catch(e => console.error('[token] error:', e.message)) }, 24 * 60 * 60 * 1000)
   await db.eliminarCatalogosDescuento()
   const refrescarInventarioYHashes = async () => {
     await cargarInventario()
@@ -3003,7 +3040,7 @@ module.exports = {
   TOOLS,
   extraerPrecios, validarPrecios, setPreciosInventarioParaPruebas,
   comentarioEsConsulta, payloadAIntent, normalize,
-  buscarEnInventario, cargarInventario, archivarHistorias,
+  buscarEnInventario, cargarInventario, archivarHistorias, mantenerToken,
   ejecutarTool,
   clasificarComentario, respuestaPublicaComentario, comentarioEsHostil, mensajePrivadoCatalogo,
   manejarComentario,

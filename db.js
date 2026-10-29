@@ -73,6 +73,21 @@ const MIGRACIONES = [
       INDEX idx_creado (creado)
     )`,
   },
+  // El token de Instagram renovado (caduca a los 60 días y el agente se queda mudo). Render
+  // no deja cambiar la variable desde el propio servicio, así que el renovado vive aquí.
+  // `origen` es el hash del token de la variable con que se empezó: si alguien pone uno
+  // nuevo en Render, manda ese y no el guardado.
+  {
+    id: 'ig-2026-10-29-token',
+    descripcion: 'tabla ig_token: el token de Instagram renovado automáticamente',
+    sql: `CREATE TABLE IF NOT EXISTS ig_token (
+      id         TINYINT PRIMARY KEY,
+      token      TEXT NOT NULL,
+      origen     CHAR(64) NOT NULL,
+      expira     DATETIME NULL,
+      renovado   DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+  },
 ]
 
 async function runMigrations() {
@@ -632,14 +647,10 @@ async function eliminarCatalogosDescuento() {
 
 // Traduce las categorías crudas de la BD oficial (productos.categoria) a las
 // claves canónicas que usan el system prompt y las tools. Sin este mapa, el
-// filtro por categoría de buscar_productos devuelve 0 resultados para estas 5.
-const CATEGORIA_KEY_MAP = {
-  comedores:  'bases_comedores',
-  mesas_aux:  'mesas_auxiliares',
-  sillas_aux: 'sillas_auxiliares',
-  cajoneros:  'cajoneros_bifes',
-  sofa_camas: 'sofas_camas',
-}
+// filtro por categoría de buscar_productos devuelve 0 resultados. Sale de
+// negocio.json → mapaCategoriasBD, igual que en WhatsApp: antes era una copia a mano
+// que se había quedado sin Puff, Reloj ni las categorías nuevas.
+const CATEGORIA_KEY_MAP = negocio.mapaCategoriasBD
 
 function normalizarCategoria(cat) {
   return CATEGORIA_KEY_MAP[cat] ?? cat
@@ -709,6 +720,27 @@ async function getMensajeEnviado(mid, psid) {
     console.warn('[mensajes-enviados] no se pudo leer:', e.message)
     return null
   }
+}
+
+// ── Token de Instagram renovado (ver la migración ig-2026-10-29-token) ────────────────
+
+// { token, origen, expira, renovado } o null. Nunca lanza: sin esto se usa la variable.
+async function getTokenGuardado() {
+  try {
+    const [rows] = await pool.query('SELECT token, origen, expira, renovado FROM ig_token WHERE id = 1')
+    return rows[0] ?? null
+  } catch (e) {
+    console.warn('[token] no se pudo leer el token guardado:', e.message)
+    return null
+  }
+}
+
+async function guardarToken({ token, origen, expira }) {
+  await pool.query(
+    `INSERT INTO ig_token (id, token, origen, expira, renovado) VALUES (1, ?, ?, ?, NOW())
+     ON DUPLICATE KEY UPDATE token = VALUES(token), origen = VALUES(origen), expira = VALUES(expira), renovado = NOW()`,
+    [token, origen, expira ?? null]
+  )
 }
 
 async function purgarMensajesEnviados(dias = 30) {
@@ -1327,6 +1359,7 @@ module.exports = {
   consultarStock,
   historiasGuardadas, guardarHistoria, getHistoria, purgarHistorias,
   registrarMensajeEnviado, getMensajeEnviado, purgarMensajesEnviados,
+  getTokenGuardado, guardarToken,
   getHashesProductos,
   upsertHashProducto,
 }

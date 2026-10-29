@@ -4,7 +4,10 @@ const axios = require('axios')
 const { alertar, conReintentos } = require('./alertas')
 
 const BASE  = 'https://graph.instagram.com/v22.0'
-const TOKEN = () => process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+// El token renovado (ver renovarToken e index.js → mantenerToken) manda sobre la variable.
+let tokenRenovado = null
+const TOKEN = () => tokenRenovado || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+function usarToken(token) { tokenRenovado = token || null }
 
 // Enviar texto al usuario (dividir si supera 1000 chars)
 async function sendTextMessage(psid, texto) {
@@ -213,6 +216,18 @@ async function expiracionToken() {
   }
 }
 
+// Renueva el token de larga duración por otros 60 días (Instagram API con inicio de sesión
+// de Instagram: graph.instagram.com/refresh_access_token). Meta solo lo permite con un
+// token de más de 24 h que no haya caducado. Devuelve { token, expira } (ms) o lanza.
+async function renovarToken() {
+  const { data } = await axios.get('https://graph.instagram.com/refresh_access_token', {
+    params: { grant_type: 'ig_refresh_token', access_token: TOKEN() },
+    timeout: 15000,
+  })
+  if (!data?.access_token) throw new Error('Meta no devolvió un token')
+  return { token: data.access_token, expira: data.expires_in ? Date.now() + data.expires_in * 1000 : null }
+}
+
 // Obtener caption/detalles de un post o historia por su media ID
 async function getMediaDetails(mediaId) {
   try {
@@ -245,5 +260,6 @@ async function getHistoriasActivas() {
 module.exports = {
   sendTextMessage, sendImageMessage, sendTypingOn, getUserInfo,
   downloadMediaToBuffer, getMediaDetails, getHistoriasActivas, expiracionToken,
+  renovarToken, usarToken,
   sendQuickReplies, sendCarousel, sendPrivateReplyToComment, replyToComment,
 }

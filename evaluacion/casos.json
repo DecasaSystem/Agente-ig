@@ -729,6 +729,146 @@
           "asesor|confirm"
         ]
       }
+    },
+    {
+      "id": "comedor-presupuesto-base-o-sillas",
+      "categoria": "ambiguedad",
+      "por_que": "Caso real 2026-10-29: 'un comedor de 6 puestos, máximo 5 millones'. No se sabe si el presupuesto es solo la base o la base con las sillas, y no es lo mismo.",
+      "mensajes": [
+        "Hola buenas, me gustaría cotizar si tienen algún comedor de 6 puestos con un presupuesto de máximo 5 millones"
+      ],
+      "esperado": {
+        "texto_contiene": [
+          "silla",
+          "\\?",
+          "solo (la )?base|base sola|con (las )?sillas|incluye"
+        ],
+        "herramientas_prohibidas": [
+          "agregar_al_carrito"
+        ]
+      }
+    },
+    {
+      "id": "telas-mascotas",
+      "categoria": "politicas",
+      "por_que": "Caso real 2026-10-29: 'sofá cama con tela para mascotas'. Dueño: la GRAN MAYORÍA de las telas son amigables con mascotas; nunca decir 'todas'.",
+      "mensajes": [
+        "Buenos días, qué sofá cama tienes? que sea con tela para mascotas"
+      ],
+      "esperado": {
+        "texto_contiene": [
+          "mayor[ií]a"
+        ],
+        "texto_prohibido": [
+          "todas (nuestras|las) telas"
+        ]
+      }
+    },
+    {
+      "id": "promocion-con-el-catalogo",
+      "categoria": "ventas",
+      "por_que": "Caso real 2026-10-29: al mandar el catálogo de sofá camas el asesor dijo 'tenemos 20 % en los existentes' sin que se lo preguntaran. La promoción viene en la respuesta de enviar_catalogo.",
+      "mensajes": [
+        "hola, me puedes mandar el catálogo de sofá camas?"
+      ],
+      "esperado": {
+        "herramientas": [
+          "enviar_catalogo"
+        ],
+        "texto_contiene": [
+          "20 ?%|promoci"
+        ]
+      }
+    },
+    {
+      "id": "sin-descuento-si-se-fabrica",
+      "categoria": "politicas",
+      "por_que": "Dueño 2026-10-20: el 5 % pagando en efectivo o transferencia es solo en lo que está en existencia. El SOFA TORELLO se fabrica sobre pedido: no lleva descuento.",
+      "mensajes": [
+        "cuánto vale el sofá torello si pago en efectivo?"
+      ],
+      "esperado": {
+        "herramientas": [
+          "buscar_productos"
+        ],
+        "texto_contiene": [
+          "2\\.040\\.000"
+        ],
+        "texto_prohibido": [
+          "1\\.938\\.000"
+        ]
+      }
+    },
+    {
+      "id": "descuento-si-hay-existencia",
+      "categoria": "politicas",
+      "por_que": "El 5 % sí aplica en lo que está en existencia, y la cifra sale de la herramienta (SOFA CONFORT 3.140.000 → 2.983.000).",
+      "mensajes": [
+        "cuánto me queda el sofá confort pagando de contado?"
+      ],
+      "esperado": {
+        "herramientas": [
+          "buscar_productos"
+        ],
+        "texto_contiene": [
+          "2\\.983\\.000"
+        ]
+      }
+    },
+    {
+      "id": "respuesta-a-una-foto",
+      "categoria": "contexto",
+      "por_que": "Caso real 2026-10-29: la clienta respondió 'Nos gustó este comedor y..' sobre una de varias fotos. El agente le dice al modelo de qué producto era la foto.",
+      "mensajes": [
+        "[El cliente está RESPONDIENDO a la foto de BASE 2K que le enviaste: se refiere a ESE producto. Si necesitas su precio o sus datos, llama buscar_productos con ese nombre exacto.]\nNos gustó este comedor y.."
+      ],
+      "esperado": {
+        "texto_contiene": [
+          "2K"
+        ],
+        "texto_prohibido": [
+          "cu[aá]l (comedor|de (ellos|los))"
+        ]
+      }
+    },
+    {
+      "id": "historia-con-varios-productos",
+      "categoria": "contexto",
+      "por_que": "Caso real 2026-10-29: historia vencida con tres sofás y el cliente solo escribe '??'. El asesor los dio en orden con su precio.",
+      "mensajes": [
+        "[El cliente respondió a una historia de @decasa.] [LA IMAGEN MUESTRA 3 PRODUCTOS DEL CATÁLOGO, en este orden:\n1. SOFA CONFORT — $3.140.000 — 2.20 x 0.95 — Tela\n2. MODULAR TERRA — $3.880.000 — 2.80 x 1.60 — Tela\n3. SOFA TORELLO — $2.040.000 — 1.90 x 0.90 — Tela\nSon nuestros: preséntalos como \"el primero es nuestro…, el segundo…\". Dale el nombre y el precio de CADA UNO con estos datos EXACTOS (no inventes medidas ni material), y pregúntale cuál le gustó más o si quiere fotos de alguno.]\n??"
+      ],
+      "esperado": {
+        "texto_contiene": [
+          "confort",
+          "terra",
+          "torello",
+          "3\\.140\\.000",
+          "3\\.880\\.000",
+          "2\\.040\\.000",
+          "\\?"
+        ]
+      }
+    },
+    {
+      "id": "historia-que-no-se-pudo-ver",
+      "categoria": "contexto",
+      "por_que": "Historia vencida de la que no hay copia: Elena no debe adivinar qué producto era.",
+      "mensajes": [
+        "[El cliente respondió a una historia de @decasa. NO pudimos ver la historia ni saber qué producto mostraba. NO adivines: pregúntale con amabilidad qué producto de la historia le interesó o pídele una captura.] ??"
+      ],
+      "esperado": {
+        "texto_contiene": [
+          "\\?",
+          "producto|mueble|captura|foto|cu[aá]l"
+        ],
+        "texto_prohibido": [
+          "\\$\\d"
+        ],
+        "herramientas_prohibidas": [
+          "agregar_al_carrito"
+        ]
+      }
     }
   ]
 }

@@ -101,7 +101,19 @@
     "colchones": "Colchones",
     "cunas": "Cunas",
     "puff": "Puff",
-    "relojes": "Relojes"
+    "relojes": "Relojes",
+    "accesorios": "Accesorios",
+    "camas_kids": "Camas Kids",
+    "camarotes": "Camarotes",
+    "consolas": "Consolas",
+    "espejos": "Espejos",
+    "estantes": "Estantes",
+    "lamparas": "Lámparas",
+    "mesas_barra": "Mesas de Barra",
+    "protectores_colchon": "Protectores de Colchón",
+    "sillitas": "Sillitas",
+    "truf": "Truf",
+    "bancas": "Bancas"
   },
   "catalogoPublico": {
     "_comentario": "Dirección de la app del sistema de ventas. Con ella el agente arma los enlaces de los catálogos visuales (/c/<slug>) y de las secciones del inventario (/catalogo/<categoría>) cuando una categoría no tiene PDF en Herramientas. Se puede cambiar con la variable CATALOGO_PUBLICO_URL.",
@@ -120,6 +132,7 @@
       "bifes": "cajoneros y bifes"
     }
   },
+  "_mapaCategoriasBD": "Nombre de la categoría tal cual está en el inventario del sistema de ventas → clave de categorias. Las de Accesorios a bancas aparecieron el 2026-10-29 (aviso de categorías nuevas).",
   "mapaCategoriasBD": {
     "comedores": "bases_comedores",
     "mesas_aux": "mesas_auxiliares",
@@ -127,7 +140,19 @@
     "cajoneros": "cajoneros_bifes",
     "sofa_camas": "sofas_camas",
     "Puff": "puff",
-    "Reloj": "relojes"
+    "Reloj": "relojes",
+    "Accesorios": "accesorios",
+    "Cama kids": "camas_kids",
+    "Camarotes": "camarotes",
+    "Consolas": "consolas",
+    "Espejos": "espejos",
+    "Estantes": "estantes",
+    "Lamparas": "lamparas",
+    "Mesas de barra": "mesas_barra",
+    "Protector de colchón": "protectores_colchon",
+    "Sillitas": "sillitas",
+    "Truf": "truf",
+    "bancas": "bancas"
   },
   "terminosAmbiguos": [
     {
@@ -136,7 +161,7 @@
     },
     {
       "termino": "mesas",
-      "pregunta": "¿Buscas mesa de centro, mesa auxiliar, mesa de noche o mesa para TV?"
+      "pregunta": "¿Buscas mesa de centro, mesa auxiliar, mesa de noche, mesa para TV o mesa de barra?"
     },
     {
       "termino": "sofá/sofas",
