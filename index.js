@@ -31,7 +31,7 @@ const vigilancia = require('./vigilancia')
 const seguimientos = require('./seguimientos')
 const memoria = require('./memoria')
 const contacto = require('./contacto')
-const { revisarRespuesta } = require('./verificacion')
+const { revisarRespuesta, quitarEnlacesDeImagenes } = require('./verificacion')
 const log = require('./log')
 const { conReintentos } = reintentos
 const visionCatalogo = require('./vision-catalogo')
@@ -885,7 +885,8 @@ async function runAgentLoop(psid, mensajeUsuario, imageBase64 = null, userInfo =
       // La última llamada a OpenAI (la que redacta el texto) es la más larga: es el
       // momento más probable para que el asesor haya tomado el chat entre medias.
       if (await asesorTomoElChat(round + 1)) return null
-      const texto = choice.message.content ?? ''
+      // Las fotos van como imagen aparte: un enlace a una imagen en el texto sobra (verificacion.js).
+      const texto = quitarEnlacesDeImagenes(choice.message.content ?? '')
       // Que no diga que hizo algo que no hizo, ni mande un enlace inventado: si pasa, la
       // respuesta no sale y el modelo la corrige (una vez, y solo si quedan rondas).
       const correccion = !yaCorregida && round < 5

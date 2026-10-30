@@ -86,4 +86,39 @@ function revisarRespuesta({ texto, herramientas = [], resultados = [] }) {
   return `REVISIÓN ANTES DE ENVIAR — tu respuesta NO se envió al cliente:\n- ${[...new Set(problemas)].join('\n- ')}\nCorrige: haz la acción con la herramienta o reescribe la respuesta sin afirmar lo que no hiciste. No menciones esta revisión.`;
 }
 
-module.exports = { revisarRespuesta, oraciones };
+// ── Enlaces de imágenes ───────────────────────────────────────────────────────
+//
+// Las fotos se mandan como imagen, aparte del texto. Antes el resultado de enviar_foto le
+// llegaba al modelo con la URL de Cloudinary (la usa el código para saber qué mandar), y
+// el modelo la copiaba en su respuesta: el cliente recibía primero un enlace raro y
+// después la foto, y podía abrir el enlace sin darse cuenta de que la foto ya venía
+// (reportado por el dueño, 2026-10-30). Dos capas: el modelo ya no ve esas URLs
+// (sinCamposInternos) y, si aun así se cuela una, se quita del texto (quitarEnlacesDeImagenes).
+
+// Para JSON.stringify: los campos que empiezan por "_" son del código, no del modelo.
+function sinCamposInternos(clave, valor) {
+  return typeof clave === 'string' && clave.startsWith('_') ? undefined : valor;
+}
+
+const ENLACE_IMAGEN = /[ \t]*https?:\/\/(?:res\.cloudinary\.com\/[^\s)\]>"']+|[^\s)\]>"']+\.(?:jpe?g|png|webp|gif|avif)(?:\?[^\s)\]>"']*)?)/gi;
+
+// El texto sin enlaces a imágenes (los de catálogos y páginas se quedan). Una línea que
+// solo era el enlace con su etiqueta ("📸 Cama Bali: <enlace>", "Foto: <enlace>") se borra.
+function quitarEnlacesDeImagenes(texto) {
+  const original = String(texto ?? '');
+  if (!original.match(ENLACE_IMAGEN)) return original;
+  return original
+    .split('\n')
+    .flatMap(linea => {
+      if (!linea.match(ENLACE_IMAGEN)) return [linea];
+      const limpia = linea.replace(ENLACE_IMAGEN, '')
+        .replace(/\(\s*(ver|aqu[ií])?\s*\)/gi, '')
+        .replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+([.,;:!?])/g, '$1').trim();
+      return !limpia || limpia.endsWith(':') ? [] : [limpia];
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+module.exports = { revisarRespuesta, oraciones, sinCamposInternos, quitarEnlacesDeImagenes };
