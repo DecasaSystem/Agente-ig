@@ -1257,7 +1257,11 @@ function formatProducto(p) {
   const descripcion = p.descripcion ? `\nDescripción: ${String(p.descripcion).slice(0, 300)}` : ''
   // "Las sillas se venden aparte" en las bases de comedor (negocio.notaDeVenta).
   const notaVenta = negocio.notaDeVenta(p.subcategoria ?? p.categoria)
-  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}${notaVenta ? `\n[${notaVenta}]` : ''}${notaDescuento ? `\n[${notaDescuento}]` : ''}${promosTexto}`
+  // En qué hoja del catálogo está (Gestión → Catálogos), para ofrecerle esa hoja (caso real
+  // del 2026-10-29: "están al final, a partir del modular confort").
+  const hoja = catalogos.hojaDelProducto(p.nombre)
+  const notaHoja = hoja ? `\n[Está en la hoja "${hoja.nombre}" del catálogo de ${hoja.catalogo}. Si le interesa, ofrécele mandarle esa hoja para ver el modelo y los parecidos: enviar_catalogo con categoria "${hoja.catalogo}" y hoja "${hoja.nombre}".]` : ''
+  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}${notaVenta ? `\n[${notaVenta}]` : ''}${notaDescuento ? `\n[${notaDescuento}]` : ''}${promosTexto}${notaHoja}`
 }
 
 // Producto del inventario de una línea del carrito. El carrito guarda "NOMBRE (variante)",

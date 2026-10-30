@@ -288,6 +288,39 @@ function resolverHoja(pedido, fuentes = {}, opciones = {}, slug = null) {
   return null;
 }
 
+// ── En qué hoja del catálogo está un producto ─────────────────────────────────────
+//
+// Para que la búsqueda le diga al agente "esta cama está en la hoja «Camas Bali y Roma»
+// del catálogo de Camas" y pueda ofrecerla (caso real del 2026-10-29: el asesor le dijo
+// a la clienta "están al final, a partir del modular confort").
+//
+// Se compara por las palabras PROPIAS del producto: en "CAMA BALI 1.40" la que cuenta es
+// "bali"; "cama" la comparten todas las camas y los números son medidas. Así encaja con
+// "Camas Bali y Roma" y también con "Bali y Roma". Si dos hojas encajan, gana la que
+// además tiene las palabras genéricas; si sigue habiendo dos, no se adivina (null).
+const GENERICAS = new Set(['cama', 'sofa', 'sofacama', 'base', 'silla', 'mesa', 'modular', 'comedor',
+  'juego', 'set', 'puestos', 'puesto', 'centro', 'noche', 'auxiliar', 'barra', 'tv', 'doble', 'sencilla',
+  'semidoble', 'queen', 'king', 'cajonero', 'escritorio', 'colchon', 'cuna', 'puff', 'reloj']);
+
+function esGenerica(p, etiquetas) {
+  if (/^\d+$/.test(p) || p.length < 2) return true;
+  if ([...GENERICAS].some(g => mismaPalabra(g, p))) return true;
+  return Object.entries(etiquetas).some(([k, v]) => [...palabras(k), ...palabras(v)].some(g => mismaPalabra(g, p)));
+}
+
+function hojaDelProducto(nombreProducto, fuentes = {}, { etiquetas = {} } = {}) {
+  const todasLasPalabras = palabras(nombreProducto);
+  const propias = todasLasPalabras.filter(p => !esGenerica(p, etiquetas));
+  if (!propias.length) return null;
+  const encajan = (fuentes.hojas ?? []).filter(h => contenidas(propias, palabras(h.nombre)));
+  const elegida = encajan.length === 1 ? encajan[0]
+    : (() => {
+        const completas = encajan.filter(h => contenidas(todasLasPalabras.filter(p => !/^\d+$/.test(p)), palabras(h.nombre)));
+        return completas.length === 1 ? completas[0] : null;
+      })();
+  return elegida ? { nombre: elegida.nombre, catalogo: elegida.catalogo } : null;
+}
+
 // Las hojas salen de un PDF de diseño y pueden pesar varios MB: WhatsApp e Instagram
 // rechazan imágenes grandes. En Cloudinary se pide una versión JPG de 1600 px.
 function imagenParaChat(url) {
@@ -402,6 +435,7 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
     disponibles: () => catalogosDisponibles(fuentes(), opciones),
     hoja: (pedido, slug = null) => resolverHoja(pedido, fuentes(), opciones, slug),
     hojasDe: (slug) => hojasDelCatalogo(fuentes(), slug),
+    hojaDelProducto: (nombre) => hojaDelProducto(nombre, fuentes(), opciones),
     delPedido: (pedido, nombresCategoria, nombreCatalogo) => categoriaDelPedido(pedido, nombresCategoria, opciones, nombreCatalogo),
     cuantos: () => Object.keys(estado.herramientas).length + estado.visuales.length + estado.secciones.length,
     // Para el comentario de Instagram y las pruebas.
@@ -411,7 +445,7 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
 
 module.exports = {
   leerCatalogos, leerOtrasFuentes, resolverCatalogo, catalogosDisponibles, revisarEnlaces, crearCatalogos,
-  resolverHoja, hojasDelCatalogo,
+  resolverHoja, hojasDelCatalogo, hojaDelProducto,
   categoriaDelPedido,
   // Para pruebas
   palabras, slugSeccion,
