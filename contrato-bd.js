@@ -28,7 +28,8 @@ const CONTRATO = {
 };
 
 // Tablas de las que el agente puede prescindir: si no están, tiene un respaldo.
-const OPCIONALES = new Set(['configuracion', 'catalogos', 'catalogo_paginas', 'promociones', 'promocion_tienda']);
+const OPCIONALES = new Set(['configuracion', 'catalogos', 'catalogo_paginas', 'promociones', 'promocion_tienda',
+  'categorias_renombradas']);
 const CONTRATO_OPCIONAL = {
   configuracion:    ['clave', 'valor'],
   // Catálogos visuales de Gestión (catalogos.js). Sin ellos el agente sigue con PDF y
@@ -40,6 +41,9 @@ const CONTRATO_OPCIONAL = {
   promociones:      ['id', 'nombre', 'producto_id', 'config_id', 'variante_id', 'tipo', 'valor',
                      'fecha_inicio', 'fecha_fin', 'activa'],
   promocion_tienda: ['promocion_id', 'tienda_id'],
+  // Renombres de Inventario → Categorías (aplicarRenombres). Sin la tabla, una categoría
+  // renombrada sale como "nueva" hasta que se agregue a negocio.json.
+  categorias_renombradas: ['nombre_viejo', 'nombre_nuevo'],
 };
 
 // Devuelve la lista de { tabla, columna } que faltan (columna null = falta la tabla).
@@ -114,6 +118,55 @@ function categoriasSinConfigurar(secciones, { categorias = {}, mapaCategoriasBD 
     .sort();
 }
 
+// Desde 2026-10-29 un supervisor puede renombrar o juntar categorías en Inventario →
+// Categorías ("Truf" → "Throw"). negocio.json conoce las categorías por su nombre
+// EXACTO de la BD (mapaCategoriasBD), así que sin esto la renombrada salía como
+// "categoría nueva": se vendía, pero el agente no la reconocía como la de siempre.
+// El sistema anota cada cambio en `categorias_renombradas` (nombre_viejo →
+// nombre de hoy); aquí se le enseña al mapa que el nombre nuevo es la misma
+// categoría de antes. Se modifica el mismo objeto que usan db.js y catalogos.js.
+// Nunca pisa lo que negocio.json ya dice del nombre nuevo.
+function claveCategoria(texto) {
+  return String(texto ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function aplicarRenombres(renombres, { categorias = {}, mapaCategoriasBD = {} } = {}) {
+  const tiene = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
+  // A qué clave de negocio.json corresponde un nombre de la BD (sin mirar tildes,
+  // mayúsculas ni separadores, como el link público del sistema).
+  const destinoDe = (nombre) => {
+    if (tiene(mapaCategoriasBD, nombre)) return mapaCategoriasBD[nombre];
+    if (tiene(categorias, nombre)) return nombre;
+    const k = claveCategoria(nombre);
+    const enMapa = Object.keys(mapaCategoriasBD).find(c => claveCategoria(c) === k);
+    if (enMapa) return mapaCategoriasBD[enMapa];
+    return Object.keys(categorias).find(c => claveCategoria(c) === k) ?? null;
+  };
+
+  const aprendidas = [];
+  for (const r of renombres ?? []) {
+    const nuevo = String(r.nombre_nuevo ?? '');
+    if (!nuevo || tiene(mapaCategoriasBD, nuevo) || tiene(categorias, nuevo)) continue;
+    const destino = destinoDe(String(r.nombre_viejo ?? ''));
+    if (!destino) continue;
+    mapaCategoriasBD[nuevo] = destino;
+    aprendidas.push(`${r.nombre_viejo} → ${nuevo}`);
+  }
+  return aprendidas;
+}
+
+async function leerRenombres(pool) {
+  try {
+    const [rows] = await pool.query(
+      'SELECT nombre_viejo, nombre_nuevo FROM categorias_renombradas ORDER BY id'
+    );
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];   // tabla todavía no creada (o BD caída): se sigue con negocio.json
+  }
+}
+
 // La revisión completa de lo que el agente toma del sistema de ventas, para correr al
 // arrancar y cada hora: esquema (verificarContrato), sedes abiertas (verificarSedes) y
 // categorías nuevas. Avisa UNA vez por cada cambio, no en cada vuelta.
@@ -150,6 +203,10 @@ function crearRevisionSistema({ pool, negocio, alertar = () => {}, log = console
         problemas.length ? `${problemas.join('; ')}. El agente ya no la ofrece para citas; actualizar las sedes en negocio.json.` : '');
     }
 
+    const aprendidas = aplicarRenombres(await leerRenombres(pool),
+      { categorias: negocio.CATEGORIAS, mapaCategoriasBD: negocio.mapaCategoriasBD });
+    if (aprendidas.length) log.log('[contrato-bd] categorías renombradas en el sistema:', aprendidas.join(', '));
+
     const nuevas = categoriasSinConfigurar(secciones(), { categorias: negocio.CATEGORIAS, mapaCategoriasBD: negocio.mapaCategoriasBD });
     if (nuevas.length) log.warn('[contrato-bd] categorías sin configurar:', nuevas.join(', '));
     avisarSiCambio('categorias', 'Categorías nuevas en el inventario',
@@ -164,5 +221,5 @@ function describirFaltantes(faltantes) {
 
 module.exports = {
   CONTRATO, CONTRATO_OPCIONAL, verificarContrato, verificarSedes, describirFaltantes,
-  categoriasSinConfigurar, crearRevisionSistema,
+  categoriasSinConfigurar, crearRevisionSistema, aplicarRenombres, claveCategoria,
 };
