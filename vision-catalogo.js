@@ -121,7 +121,7 @@ async function clasificarImagen(openai, imagen, categorias) {
 
 // ── Paso 2: comparar dentro de la categoría ───────────────────────────────────
 
-// `candidatos`: [{ nombre, imagen, medidas, material }] — productos de UNA categoría con foto.
+// `candidatos`: [{ nombre, imagen, imagen2?, medidas, material }] — productos de UNA categoría con foto.
 // Devuelve [{ nombre, similitud, razon }] ordenado de mayor a menor similitud.
 async function compararConCategoria(openai, imagen, candidatos, { descripcion = '', muebles = 1 } = {}) {
   const conFoto = candidatos.filter(c => c.imagen);
@@ -160,11 +160,16 @@ async function compararConCategoria(openai, imagen, candidatos, { descripcion = 
     const contenido = [
       { type: 'text', text: `FOTO DEL CLIENTE${descripcion ? ` (${descripcion})` : ''}:` },
       { type: 'image_url', image_url: { url: dataUrl(imagen.base64, imagen.mime), detail: 'high' } },
-      { type: 'text', text: `CATÁLOGO (${lote.length} productos, cada uno con su número):` },
+      { type: 'text', text: `CATÁLOGO (${lote.length} productos, cada uno con su número; algunos traen 2 fotos del mismo producto desde otro ángulo):` },
     ];
     lote.forEach((p, idx) => {
       contenido.push({ type: 'text', text: `#${idx + 1} ${p.nombre}${p.medidas ? ` — ${p.medidas}` : ''}${p.material ? ` — ${p.material}` : ''}` });
       contenido.push({ type: 'image_url', image_url: { url: urlMiniatura(p.imagen), detail: 'low' } });
+      // La foto adicional de Inventario (otro ángulo) va con el MISMO número: así el
+      // cliente que manda el mueble de lado también se reconoce (pedido 2026-10-30).
+      if (p.imagen2 && p.imagen2 !== p.imagen) {
+        contenido.push({ type: 'image_url', image_url: { url: urlMiniatura(p.imagen2), detail: 'low' } });
+      }
     });
     contenido.push({ type: 'text', text: (muebles > 1
       ? `La foto del cliente muestra ${muebles} muebles DISTINTOS. Para CADA uno, devuelve la foto del catálogo que más se le parezca, con su similitud, en el orden en que aparecen en la foto (de izquierda a derecha o de arriba abajo).`

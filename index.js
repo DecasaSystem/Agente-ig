@@ -35,6 +35,7 @@ const { revisarRespuesta } = require('./verificacion')
 const log = require('./log')
 const { conReintentos } = reintentos
 const visionCatalogo = require('./vision-catalogo')
+const fotosProducto = require('./fotos-producto')
 
 const app  = express()
 const PORT = process.env.PORT ?? 3001
@@ -102,7 +103,7 @@ function setPreciosInventarioParaPruebas(nums) {
 }
 
 // ── Hash de imágenes de catálogo (para identificar fotos reenviadas/capturadas) ─
-let hashesCatalogo = new Map() // nombre -> { hash, imagen }
+let hashesCatalogo = new Map() // clave (nombre, o nombre + ' · foto 2') -> { hash, imagen }
 async function sincronizarHashesCatalogo() {
   try {
     const existentes = await db.getHashesProductos()
@@ -115,15 +116,16 @@ async function sincronizarHashesCatalogo() {
     // no debe intentar bajarlas todas de un tirón — el resto se completa en los
     // siguientes ciclos de 30 min.
     const LOTE_MAX = 60
-    const todosPendientes = inventario.filter(p => p.imagen && hashesCatalogo.get(p.nombre)?.imagen !== p.imagen)
+    // Las dos fotos de Inventario se indexan (core/fotos-producto.js).
+    const todosPendientes = fotosProducto.fotosParaIndexar(inventario).filter(p => hashesCatalogo.get(p.clave)?.imagen !== p.imagen)
     const pendientes = todosPendientes.slice(0, LOTE_MAX)
     for (const p of pendientes) {
       try {
         const hash = await imgHash.hashDesdeUrl(p.imagen)
-        await db.upsertHashProducto(p.nombre, p.imagen, hash)
-        hashesCatalogo.set(p.nombre, { hash, imagen: p.imagen })
+        await db.upsertHashProducto(p.clave, p.imagen, hash)
+        hashesCatalogo.set(p.clave, { hash, imagen: p.imagen })
       } catch (e) {
-        console.warn(`[hash-imagen] no se pudo procesar "${p.nombre}":`, e.message)
+        console.warn(`[hash-imagen] no se pudo procesar "${p.clave}":`, e.message)
       }
       await new Promise(r => setTimeout(r, 150))
     }
@@ -148,7 +150,7 @@ async function identificarImagenPorCategoria(psid, imagen, opcionesContexto = {}
   const claves = [...new Set(inventario.map(p => p.subcategoria).filter(Boolean))]
   const categorias = claves.map(clave => ({ clave, nombre: NOMBRES_CATEGORIA[clave] ?? clave }))
   const inventarioPlano = inventario.map(p => ({
-    nombre: p.nombre, imagen: p.imagen || null, medidas: p.medidas || '', material: p.material || '',
+    nombre: p.nombre, imagen: p.imagen || null, imagen2: p.imagen2 || null, medidas: p.medidas || '', material: p.material || '',
     precio: p.precio, categoria: p.subcategoria, variantes: p.variantes,
   }))
 
@@ -180,7 +182,7 @@ async function identificarProductoPorImagen(buffer) {
     const hashesEntrada = await imgHash.hashesCandidatos(buffer)
     const catalogoArr   = [...hashesCatalogo.entries()].map(([nombre, v]) => [nombre, v.hash])
     const match = imgHash.mejorCoincidencia(hashesEntrada, catalogoArr)
-    return match?.nombre ?? null
+    return match ? fotosProducto.nombreDeClave(match.nombre) : null
   } catch (e) {
     console.warn('[hash-imagen] no se pudo comparar imagen entrante:', e.message)
     return null
@@ -684,6 +686,10 @@ const TOOLS = [
         categoria: {
           type: 'string',
           description: "La categoría que pide el cliente. Usa la clave si la conoces (sofas, camas, bases_comedores, sillas_comedor, sillas_auxiliares, sillas_barra, mesas_centro, mesas_noche, mesas_tv, mesas_auxiliares, sofas_camas, sofas_modulares, cajoneros_bifes, colchones, escritorios) y, si no está ahí, la palabra del cliente (p. ej. \"cunas\"). Si es ambigua (\"sillas\", \"mesas\"), pregunta antes cuál. Si pide el catálogo en general, sin decir de qué, usa \"todos\": le llega la portada con todos los catálogos.",
+        },
+        hoja: {
+          type: 'string',
+          description: "Opcional. El NOMBRE de una hoja del catálogo, tal como te lo dio esta herramienta en las hojas del catálogo (p. ej. \"Camas Bali y Roma\"), o el producto que busca el cliente (\"bali\"). Úsalo cuando el cliente busca algo puntual: le llega solo esa hoja (la imagen y un enlace que abre el catálogo en esa hoja). Si no hay una hoja con ese nombre, le llega el catálogo completo. Nunca inventes nombres de hojas.",
         },
       },
       required: ['categoria'],
@@ -1541,10 +1547,39 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         return `[NO enviado] No hay un catálogo que sea exactamente de "${args.categoria}".${hay.length ? ` Los que sí hay: ${hay.join(', ')}. Si lo que pidió es ambiguo, pregúntale cuál de esos quiere; si no se vende, díselo con amabilidad y ofrécele buscar productos.` : ' Ofrécele buscar productos.'}`
       }
       evento(psid, 'catalogo', `${encontrado.fuente}: ${encontrado.nombre}`)
-      const intro = encontrado.fuente === 'inventario'
-        ? 'Aquí puedes ver todos los modelos con fotos y precios actualizados 📖 — toca el enlace:'
-        : 'Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:'
-      await enviarTextoIA(psid, `${intro}\n${encontrado.url}`)
+      // Una hoja puntual (nombre de la hoja en Gestión → Catálogos, 2026-10-30): le llega
+      // la imagen de esa hoja y el enlace que abre el catálogo ahí. Si no hay una hoja con
+      // ese nombre, va el catálogo completo; si hay varias, se le dicen al modelo.
+      const busqueda = args.hoja ? catalogos.hoja(args.hoja, encontrado.slug) : null
+      const hoja = busqueda?.hoja ?? null
+      if (hoja) {
+        evento(psid, 'catalogo_hoja', `${hoja.catalogo}: ${hoja.nombre}`)
+        if (hoja.imagen) {
+          try {
+            const mid = await ig.sendImageMessage(psid, hoja.imagen)
+            db.registrarMensajeEnviado({ mid: typeof mid === 'string' ? mid : null, psid, producto: hoja.nombre, imagenUrl: hoja.imagen })
+          } catch (e) {
+            console.warn('[catalogo] no se pudo mandar la imagen de la hoja:', e.message)
+          }
+        }
+        await enviarTextoIA(psid, `Esta es la hoja "${hoja.nombre}" del catálogo de ${hoja.catalogo} 📖 — toca el enlace para verla y pasar las páginas:\n${hoja.url}`)
+      } else {
+        const intro = encontrado.fuente === 'inventario'
+          ? 'Aquí puedes ver todos los modelos con fotos y precios actualizados 📖 — toca el enlace:'
+          : 'Aquí tienes el catálogo completo 📖 — toca el enlace para verlo:'
+        await enviarTextoIA(psid, `${intro}\n${encontrado.url}`)
+      }
+      const hojas = !hoja && encontrado.slug ? catalogos.hojasDe(encontrado.slug) : []
+      const textoHoja = hoja
+        ? ` Le llegó solo la hoja "${hoja.nombre}" (imagen + enlace que abre el catálogo en esa hoja).`
+        : busqueda?.opciones
+          ? ` Varias hojas encajan con lo que pidió (${busqueda.opciones.join(' · ')}) y se le mandó el catálogo completo; si quiere una, pregúntale cuál y vuelve a llamar con su nombre exacto.`
+          : args.hoja
+            ? ' No hay una hoja con ese nombre: se le mandó el catálogo completo.'
+            : ''
+      const textoHojas = hojas.length
+        ? ` Hojas con nombre de este catálogo: ${hojas.join(' · ')}. Si el cliente busca algo puntual de una de ellas, puedes mandarle solo esa hoja llamando otra vez con hoja = su nombre.`
+        : ''
       // Lo que pidió ver es lo que le interesa: queda en su perfil y en su ficha.
       if (args.categoria && args.categoria !== 'todos') {
         await actualizarPerfil(psid, { categorias_interes: [String(args.categoria).trim().toLowerCase()] })
@@ -1557,7 +1592,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       const textoPromos = promosCat.length
         ? ` En esta categoría HAY PROMOCIÓN en lo que está en existencia:\n${promosCat.join('\n')}\nMenciónaselo en este mismo mensaje, en una frase y sin que lo pregunte (la rebaja y en qué tiendas), para que aproveche.`
         : ''
-      return `[Catálogo de ${encontrado.nombre} enviado exitosamente (${encontrado.url}). El cliente ya recibió el enlace: NO lo repitas.${textoPromos} Sigue con UNA pregunta para entender qué busca (espacio, medida, estilo o presupuesto)]`
+      return `[Catálogo de ${encontrado.nombre} enviado exitosamente (${hoja ? hoja.url : encontrado.url}). El cliente ya recibió el enlace: NO lo repitas.${textoHoja}${textoHojas}${textoPromos} Sigue con UNA pregunta para entender qué busca (espacio, medida, estilo o presupuesto)]`
     }
 
     case 'reportar_imagen_no_identificada': {

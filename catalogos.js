@@ -97,6 +97,28 @@ async function leerOtrasFuentes(pool) {
     // Sin secciones el agente sigue con PDF y visuales.
   }
 
+  // Las HOJAS con nombre de cada catálogo visual (catalogo_paginas.nombre, 2026-10-30).
+  // El nombre lo pone la tienda en Gestión → Catálogos para que el agente sepa qué hoja
+  // manda ("Camas Bali y Roma") y pueda mandar solo esa. La columna es opcional en el
+  // contrato: si la base todavía no la tiene, la consulta falla y no hay hojas.
+  try {
+    const [rows] = await pool.query(
+      `SELECT p.id, p.nombre, p.imagen_url, c.slug, c.nombre AS catalogo
+       FROM catalogo_paginas p JOIN catalogos c ON c.id = p.catalogo_id
+       WHERE c.activo = 1 AND p.nombre IS NOT NULL AND p.nombre <> ''
+       ORDER BY c.orden, c.nombre, p.orden`
+    );
+    fuentes.hojas = rows.filter(r => r.slug && r.nombre).map(r => ({
+      id: Number(r.id),
+      nombre: String(r.nombre).trim(),
+      imagen: r.imagen_url ? String(r.imagen_url) : null,
+      slug: String(r.slug),
+      catalogo: String(r.catalogo ?? r.slug),
+    }));
+  } catch {
+    // Sin la columna `nombre` (o caída): se mandan los catálogos completos, como antes.
+  }
+
   return fuentes;
 }
 
@@ -217,7 +239,7 @@ function resolverCatalogo(pedido, fuentes = {}, opciones = {}) {
 
   if (base) {
     const visual = elegir(fuentes.visuales ?? [], formas, c => [c.nombre, c.slug]);
-    if (visual) return { url: `${base}/c/${visual.slug}`, fuente: 'visual', nombre: visual.nombre };
+    if (visual) return { url: `${base}/c/${visual.slug}`, fuente: 'visual', nombre: visual.nombre, slug: visual.slug };
 
     const seccion = elegir((fuentes.secciones ?? []).filter(s => s.productos > 0), formas, s => s.categoria);
     if (seccion) return { url: `${base}/catalogo/${slugSeccion(seccion.categoria)}`, fuente: 'inventario', nombre: seccion.categoria };
@@ -231,6 +253,55 @@ function resolverCatalogo(pedido, fuentes = {}, opciones = {}) {
   // dicho cuáles quería: lo ambiguo se pregunta.
   const pdf = elegir(pdfs, formas, c => c.clave);
   return pdf ? { url: pdf.url, fuente: 'pdf', nombre: pdf.clave } : null;
+}
+
+// ── Una hoja puntual del catálogo ──────────────────────────────────────────────────
+//
+// El cliente busca algo concreto ("la cama Bali") y esa hoja tiene nombre en Gestión.
+// Aquí no se exige "las mismas palabras" como con los catálogos: el nombre de la hoja
+// suele juntar varias cosas ("Camas Bali y Roma"), así que basta con que TODAS las
+// palabras pedidas estén en el nombre ("bali" → "Camas Bali y Roma"). Si varias hojas
+// encajan, gana la que tiene exactamente las mismas palabras; si sigue habiendo más de
+// una, no se adivina: devuelve las opciones para que el agente pregunte.
+// `slug` (opcional): primero se busca en ese catálogo y, si no está, en todos.
+//
+// Devuelve { hoja: { url, nombre, catalogo, imagen } } · { opciones: [nombres] } · null.
+function resolverHoja(pedido, fuentes = {}, opciones = {}, slug = null) {
+  const base = String(opciones.urlBase ?? '').replace(/\/+$/, '');
+  const buscadas = palabras(pedido);
+  if (!base || !buscadas.length) return null;
+
+  const todas = fuentes.hojas ?? [];
+  const grupos = slug ? [todas.filter(h => h.slug === slug), todas] : [todas];
+  for (const hojas of grupos) {
+    const encajan = hojas.filter(h => contenidas(buscadas, palabras(h.nombre)));
+    if (!encajan.length) continue;
+    const exactas = encajan.filter(h => mismasPalabras(buscadas, palabras(h.nombre)));
+    const unica = encajan.length === 1 ? encajan[0] : (exactas.length === 1 ? exactas[0] : null);
+    if (unica) {
+      return {
+        hoja: { url: `${base}/c/${unica.slug}?hoja=${unica.id}`, nombre: unica.nombre, catalogo: unica.catalogo, imagen: imagenParaChat(unica.imagen) },
+      };
+    }
+    return { opciones: [...new Set(encajan.map(h => h.nombre))].slice(0, 8) };
+  }
+  return null;
+}
+
+// Las hojas salen de un PDF de diseño y pueden pesar varios MB: WhatsApp e Instagram
+// rechazan imágenes grandes. En Cloudinary se pide una versión JPG de 1600 px.
+function imagenParaChat(url) {
+  if (!url) return null;
+  return /res\.cloudinary\.com\/.+\/image\/upload\//.test(url) && !/\/upload\/[^/]*w_\d+/.test(url)
+    ? url.replace('/image/upload/', '/image/upload/f_jpg,q_auto,w_1600,c_limit/')
+    : url;
+}
+
+// Los nombres de las hojas de un catálogo visual, para decírselos al agente junto con el
+// catálogo (van en la respuesta de la herramienta, no en el prompt: así el prompt no
+// cambia cuando cambia el catálogo).
+function hojasDelCatalogo(fuentes = {}, slug) {
+  return (fuentes.hojas ?? []).filter(h => h.slug === slug).map(h => h.nombre).slice(0, 30);
 }
 
 // Para cuando no se encontró: qué catálogos sí hay, en palabras que el agente pueda
@@ -287,9 +358,10 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
     fuente: 'respaldo',
     visuales: [],
     secciones: [],
+    hojas: [],
     rotos: new Set(),
   };
-  const fuentes = () => ({ herramientas: estado.herramientas, visuales: estado.visuales, secciones: estado.secciones });
+  const fuentes = () => ({ herramientas: estado.herramientas, visuales: estado.visuales, secciones: estado.secciones, hojas: estado.hojas });
 
   async function cargar() {
     try {
@@ -307,9 +379,10 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
     const otras = await leerOtrasFuentes(pool);
     if (otras.visuales)  estado.visuales  = otras.visuales;
     if (otras.secciones) estado.secciones = otras.secciones;
+    if (otras.hojas)     estado.hojas     = otras.hojas;
 
     log.log(`[catalogos] ${Object.keys(estado.herramientas).length} PDF (${estado.fuente}) · ` +
-      `${estado.visuales.length} visuales · ${estado.secciones.length} secciones del inventario`);
+      `${estado.visuales.length} visuales (${estado.hojas.length} hojas con nombre) · ${estado.secciones.length} secciones del inventario`);
 
     // Los enlaces se revisan sin hacer esperar a nadie. Se avisa solo de los que se
     // rompieron desde la última revisión, no cada hora de los mismos.
@@ -327,6 +400,8 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
     cargar,
     resolver: (pedido) => resolverCatalogo(pedido, fuentes(), { ...opciones, rotos: estado.rotos }),
     disponibles: () => catalogosDisponibles(fuentes(), opciones),
+    hoja: (pedido, slug = null) => resolverHoja(pedido, fuentes(), opciones, slug),
+    hojasDe: (slug) => hojasDelCatalogo(fuentes(), slug),
     delPedido: (pedido, nombresCategoria, nombreCatalogo) => categoriaDelPedido(pedido, nombresCategoria, opciones, nombreCatalogo),
     cuantos: () => Object.keys(estado.herramientas).length + estado.visuales.length + estado.secciones.length,
     // Para el comentario de Instagram y las pruebas.
@@ -336,6 +411,7 @@ function crearCatalogos({ pool, respaldo = {}, opciones = {}, alertar = () => {}
 
 module.exports = {
   leerCatalogos, leerOtrasFuentes, resolverCatalogo, catalogosDisponibles, revisarEnlaces, crearCatalogos,
+  resolverHoja, hojasDelCatalogo,
   categoriaDelPedido,
   // Para pruebas
   palabras, slugSeccion,

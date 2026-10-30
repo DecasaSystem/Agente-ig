@@ -35,7 +35,9 @@ const CONTRATO_OPCIONAL = {
   // Catálogos visuales de Gestión (catalogos.js). Sin ellos el agente sigue con PDF y
   // con la página de la sección del inventario.
   catalogos:        ['id', 'nombre', 'slug', 'activo', 'orden'],
-  catalogo_paginas: ['catalogo_id'],
+  // nombre (2026-10-30): el nombre de cada hoja, para mandar una hoja puntual
+  // (catalogos.resolverHoja). Sin él se manda el catálogo completo.
+  catalogo_paginas: ['id', 'catalogo_id', 'imagen_url', 'nombre', 'orden'],
   // Promociones por tienda (Inventario → Promociones; core/promociones.js). Sin ellas se
   // vende a precio de lista.
   promociones:      ['id', 'nombre', 'producto_id', 'config_id', 'variante_id', 'tipo', 'valor',
