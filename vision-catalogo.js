@@ -269,7 +269,19 @@ async function identificarPorVision(openai, imagen, { inventarioPlano, categoria
 // `puedeSerDeOtraCuenta`: la foto viene de una publicación o historia que el cliente
 // compartió, que puede ser de otra tienda. Aunque se parezca muchísimo, no se le afirma que
 // es nuestra: "tenemos una muy parecida" (caso real del 2026-10-29: historia de otra cuenta).
-function construirContextoVision(resultado, formatear, { puedeSerDeOtraCuenta = false } = {}) {
+//
+// Caso real del 2026-11-03: la clienta preguntó si podía mandar a hacer una cuna distinta a
+// las del catálogo, el asesor le dijo "sí, somos fabricantes, mándame tu diseño", y la foto
+// que llegó después era SU diseño. Todo bloque de visión lleva este recordatorio para que
+// Elena no le cambie el diseño por un producto nuestro.
+const NOTA_DISENO_PROPIO = 'Si en esta conversación el cliente ya dijo que quiere MANDAR A HACER su propio diseño, esta foto es ese diseño: no le ofrezcas productos del catálogo en su lugar; sigue la regla MUEBLE A MEDIDA y pásalo con un asesor (personalización).';
+
+function construirContextoVision(resultado, formatear, opciones = {}) {
+  const ctx = contextoSegunCoincidencia(resultado, formatear, opciones);
+  return ctx ? ctx.replace(/\]$/, ` ${NOTA_DISENO_PROPIO}]`) : ctx;
+}
+
+function contextoSegunCoincidencia(resultado, formatear, { puedeSerDeOtraCuenta = false } = {}) {
   if (!resultado) return null;
   if (resultado.tipo === 'varios') {
     const lista = resultado.productos.map((p, i) => `${i + 1}. ${formatear(p)}`).join('\n');
