@@ -1230,6 +1230,8 @@ function formatProducto(p) {
     return v ? ` (pagando en efectivo o transferencia: ${pesos(v)})` : ''
   }
   const notaDescuento = info.precio_requiere_asesor ? null : negocio.notaSinDescuento(p)
+  // En existencia = entrega inmediata (dueño, 2026-11-03).
+  const notaExistencia = negocio.notaEnExistencia(p)
   // Promoción del sistema de ventas (core/promociones.js): si le toca a esta versión y el
   // producto está en existencia, el precio que vale es el de promoción y el 5 % se calcula
   // sobre él. El precio de lista se sigue mostrando para que Elena diga "antes / ahora".
@@ -1262,7 +1264,7 @@ function formatProducto(p) {
   // del 2026-10-29: "están al final, a partir del modular confort").
   const hoja = catalogos.hojaDelProducto(p.nombre)
   const notaHoja = hoja ? `\n[Está en la hoja "${hoja.nombre}" del catálogo de ${hoja.catalogo}. Si le interesa, ofrécele mandarle esa hoja para ver el modelo y los parecidos: enviar_catalogo con categoria "${hoja.catalogo}" y hoja "${hoja.nombre}".]` : ''
-  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}${notaVenta ? `\n[${notaVenta}]` : ''}${notaDescuento ? `\n[${notaDescuento}]` : ''}${promosTexto}${notaHoja}`
+  return `*${p.nombre}*\n${linea}\nMedidas: ${p.medidas ?? 'consultar'}\nMaterial: ${p.material ?? 'consultar'}${descripcion}${notaVenta ? `\n[${notaVenta}]` : ''}${notaDescuento ? `\n[${notaDescuento}]` : ''}${notaExistencia ? `\n[${notaExistencia}]` : ''}${promosTexto}${notaHoja}`
 }
 
 // Producto del inventario de una línea del carrito. El carrito guarda "NOMBRE (variante)",

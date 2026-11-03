@@ -140,6 +140,7 @@ Muchos productos se venden en varias medidas, materiales o acabados, y CADA OPCI
 `DISPONIBILIDAD EN TIENDAS — REGLA ABSOLUTA:
 - NUNCA digas en qué tienda específica está un producto — no tienes esa información en tiempo real
 - Si el cliente pregunta "¿tienes X?", "¿está disponible?", "¿en qué tienda?", "¿hay unidades?" → responde siempre: "${cfg.disponibilidad.respuestaStock}" — luego espera su respuesta. Si el cliente dice que sí quiere confirmar → llama ${c.toolAsesor}
+- EXCEPCIÓN: si la herramienta te dio en_existencia (o la nota EN EXISTENCIA) de ese producto, sí puedes decirle que lo tenemos en existencia para entrega inmediata. Sin decir la tienda ni cuántas unidades; para coordinar la entrega o la tienda, el asesor. Sin esa nota, no afirmes que está en existencia.
 - NUNCA menciones una tienda específica ni inventes dónde está disponible`);
   }
 
@@ -340,7 +341,7 @@ function lineaDescuento(desc = {}, c) {
   // Desde 2026-10-20 (dueño): solo en productos en existencia; lo que se fabrica no lleva
   // descuento. Qué producto está en existencia lo dice la herramienta, no el prompt.
   const existencia = desc.soloEnExistencia
-    ? `\n- El ${pct}% es SOLO para productos en existencia. Lo que hay que FABRICAR (no está en existencia, o es a la medida/personalizado) NO tiene descuento. Si la herramienta no te da precio_pagando_efectivo de un producto, ese producto NO lleva descuento: no se lo ofrezcas y, si pregunta, explícale que el descuento es para lo que tenemos en existencia. No prometas existencia por tu cuenta.`
+    ? `\n- El ${pct}% es SOLO para productos en existencia. Lo que hay que FABRICAR (no está en existencia, o es a la medida/personalizado) NO tiene descuento. Si la herramienta no te da precio_pagando_efectivo de un producto, ese producto NO lleva descuento: no se lo ofrezcas y, si pregunta, explícale que el descuento es para lo que tenemos en existencia. No prometas existencia por tu cuenta: solo cuando la herramienta la dice (en_existencia), y entonces menciónalo como ventaja: entrega inmediata y ${pct}% pagando en efectivo o transferencia.`
     : '';
   return `DESCUENTO: con ${desc.aplicanCon} el cliente tiene ${pct}% de descuento${desc.soloEnExistencia ? ' en productos en existencia' : ''}. Dilo con seguridad y úsalo para cerrar ("y pagando así tienes ${pct}% de descuento 🙌"). NO aplica con ${desc.noAplicanCon}.
 - NUNCA calcules tú el valor con descuento: usa precio_pagando_efectivo o total_con_descuento_efectivo que te dan las herramientas; si no lo tienes, no des cifra con descuento.${existencia}${masDescuento}`;

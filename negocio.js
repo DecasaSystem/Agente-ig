@@ -149,6 +149,18 @@ function notaSinDescuento(producto) {
     : `Hoy no hay unidades en existencia: se fabrica sobre pedido y lo que se fabrica NO tiene el ${porcentajeDescuentoEfectivo}% de descuento por efectivo/transferencia. Díselo con naturalidad si habla de descuento o de forma de pago.`;
 }
 
+// Qué decirle al modelo de un producto EN existencia (dueño, 2026-11-03): "a todos los que ya
+// estén en existencia para entrega inmediata, eso también se lo puede decir a la gente". Va
+// en la respuesta de la herramienta, como notaSinDescuento. La tienda no se dice: la existencia
+// suma las sedes activas y se recarga cada 30 min.
+function notaEnExistencia(producto) {
+  if (!(Number(producto?.existencias) > 0)) return null;
+  const desc = aplicaDescuentoEfectivo(producto) && porcentajeDescuentoEfectivo
+    ? ` y, pagando en efectivo o transferencia, tiene el ${porcentajeDescuentoEfectivo}% de descuento`
+    : '';
+  return `EN EXISTENCIA: lo tenemos para entrega inmediata${desc}. Díselo como ventaja para cerrar ("este lo tenemos en existencia para entrega inmediata 🙌"). No digas en qué tienda está ni cuántas unidades hay: para coordinar la entrega o la tienda, un asesor.`;
+}
+
 // Total con descuento de un carrito: el % se aplica solo a las líneas cuyo producto está
 // en existencia. lineas = [{ valor, producto }] (valor = precio × cantidad). Devuelve
 // null si ninguna línea lleva descuento.
@@ -235,7 +247,7 @@ module.exports = {
   topeGastoDiarioUsd:         op.topeGastoDiarioUsd ?? 0,
   // Pagos
   porcentajeDescuentoEfectivo, conDescuentoEfectivo,
-  descuentoSoloEnExistencia, aplicaDescuentoEfectivo, notaSinDescuento, totalConDescuentoEfectivo,
+  descuentoSoloEnExistencia, aplicaDescuentoEfectivo, notaSinDescuento, notaEnExistencia, totalConDescuentoEfectivo,
   notaDeVenta,
   // Utilidades
   formatearMoneda,

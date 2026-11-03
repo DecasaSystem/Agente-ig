@@ -891,6 +891,26 @@
           "agregar_al_carrito"
         ]
       }
+    },
+    {
+      "id": "existencia-entrega-inmediata",
+      "categoria": "ventas",
+      "por_que": "Dueño, 2026-11-03: lo que está en existencia es para entrega inmediata y tiene 5 % pagando en efectivo o transferencia; Elena lo debe usar como ventaja (SOFA CONFORT tiene existencias en el catálogo de prueba).",
+      "mensajes": [
+        "Hola, me interesa el sofá Confort, ¿cuánto vale y cuánto se demora?"
+      ],
+      "esperado": {
+        "herramientas": [
+          "buscar_productos"
+        ],
+        "texto_contiene": [
+          "inmediat",
+          "5 ?%|efectivo|transferencia"
+        ],
+        "texto_prohibido": [
+          "\\d+ unidades"
+        ]
+      }
     }
   ]
 }
