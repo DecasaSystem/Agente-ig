@@ -31,6 +31,7 @@ const vigilancia = require('./vigilancia')
 const seguimientos = require('./seguimientos')
 const memoria = require('./memoria')
 const contacto = require('./contacto')
+const contactoProgramado = require('./contacto-programado')
 const { revisarRespuesta, quitarEnlacesDeImagenes } = require('./verificacion')
 const log = require('./log')
 const { conReintentos } = reintentos
@@ -627,6 +628,7 @@ const TOOLS = [
         motivo: { type: 'string' },
         tipo:   { type: 'string', enum: ['asesor', 'pedido', 'cita', 'personalizacion'] },
         ...PARAMS_CONTACTO,
+        ...contactoProgramado.PARAMS_PROGRAMAR,
       },
       required: ['motivo', 'tipo'],
     },
@@ -1709,6 +1711,16 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
         motivoFinal += `\nCarrito: ${resumenCarritoIG}`
       }
 
+      // "Que me contacten mañana a las 11" (caso real del 2026-11-03): la tarjeta llega
+      // unos minutos antes de esa hora, no ahora, y la IA no se silencia mientras tanto.
+      if (args.contactar_dia || args.contactar_hora) {
+        const prog = contactoProgramado.programarContacto(negocio, args.contactar_dia, args.contactar_hora, { herramienta: 'solicitar_asesor' })
+        if (!prog.ok) return `NO SE PROGRAMÓ: ${prog.error}`
+        await programarNotificacionRedes(psid, userInfo, `${prog.lineaResumen}\n${motivoFinal}`, args.tipo, { carrito: carritoIG.length ? carritoIG : undefined, ...extraContacto }, prog.retrasoSegundos)
+        evento(psid, 'transferencia', `${args.tipo} programada para el ${prog.texto}`)
+        return `PROGRAMADO: un asesor lo contactará el ${prog.texto}${datosContacto.telefono ? ' al número que dejó' : ' por aquí'}. Díselo así, con ese día y esa hora. Es un contacto del asesor, NO una cita en la tienda: no digas "te agendamos una cita/visita". MIENTRAS TANTO tú sigues atendiéndolo con normalidad; no te despidas como si lo transfirieras ya y no vuelvas a llamar solicitar_asesor por este motivo.`
+      }
+
       // Fuera de horario (o a menos de 20 min del cierre): nadie va a tomar la tarjeta
       // hasta el próximo día hábil, así que NO se silencia a la IA — antes el cliente
       // quedaba toda la noche hablando con nadie. La tarjeta se crea igual (el asesor la
@@ -2102,6 +2114,20 @@ function notificarRedes(psid, userInfo, resumen, tipo, extra = {}, { alFallar } 
         if (alFallar) Promise.resolve().then(alFallar).catch(() => {})
       }
     })
+}
+
+// Un aviso que debe llegar MÁS TARDE ("que me contacten mañana a las 11"): va directo a la
+// cola con su hora de envío; el worker lo manda cuando toque, con la misma idempotencia y
+// los mismos reintentos. El sistema de ventas no tiene "contactar a tal hora", así que la
+// tarjeta (y el aviso al celular del asesor) es el recordatorio. Se espera la escritura: si
+// la base falla, Elena no debe decirle al cliente que quedó programado.
+async function programarNotificacionRedes(psid, userInfo, resumen, tipo, extra, retrasoSegundos) {
+  if (!(retrasoSegundos >= 60)) return notificarRedes(psid, userInfo, resumen, tipo, extra)
+  await db.encolarNotificacion(psid, tipo, {
+    resumen,
+    extra: { ...extra, idempotencia: extra.idempotencia || crypto.randomUUID() },
+    userInfo: { nombre: userInfo?.nombre ?? null, username: userInfo?.username ?? null },
+  }, retrasoSegundos)
 }
 
 // ¿El sistema de ventas rechazó la notificación de forma definitiva? Un 4xx (payload

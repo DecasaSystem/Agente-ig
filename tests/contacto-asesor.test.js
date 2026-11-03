@@ -214,3 +214,32 @@ test('al agregar la 1.40 al carrito entra con el precio de promoción', async ()
   assert.ok(salida.includes('agregado al carrito por $1.275.000 (en promoción: Feria de octubre −15 % (lista $1.500.000))'), salida)
   assert.deepEqual(carritoGuardado?.[0], { producto: 'CAMA BALI (1.40)', precio: '$1.275.000', cantidad: 1, promocion: 'Feria de octubre −15 % (lista $1.500.000)' })
 })
+
+// Caso real del 2026-11-03: "ahorita no puedo, ¿qué tal mañana a las 11?". La tarjeta se
+// programa en la cola para 10 min antes, sin silenciar a Elena; fuera de horario, no.
+test('solicitar_asesor con hora para que lo contacten: se encola para más tarde', async () => {
+  const encolados = []
+  db.encolarNotificacion = async (...a) => { encolados.push(a) }
+  const salida = await agente.ejecutarTool('psid-1', 'solicitar_asesor', {
+    motivo: 'Cotizar base a la medida', tipo: 'personalizacion', nombre: 'Joan', telefono_contacto: '3001112233',
+    contactar_dia: 'miércoles 16 de septiembre de 2026', contactar_hora: '11:00',
+  }, {})
+  await esperar()
+  assert.match(salida, /^PROGRAMADO: .*miércoles 16 de septiembre de 2026 a las 11:00 am/)
+  assert.equal(enviados.length, 0)
+  assert.equal(transferido, null)
+  const [psid, tipo, payload, retraso] = encolados[0]
+  assert.equal(psid, 'psid-1')
+  assert.equal(tipo, 'personalizacion')
+  assert.match(payload.resumen, /^⏰ CONTACTAR EL MIÉRCOLES 16 DE SEPTIEMBRE/)
+  assert.ok(payload.extra.idempotencia)
+  // Martes 10:00 → miércoles 10:50: 24 h 50 min.
+  assert.equal(retraso, (24 * 60 + 50) * 60)
+
+  const tarde = await agente.ejecutarTool('psid-1', 'solicitar_asesor', {
+    motivo: 'x', tipo: 'asesor', nombre: 'Joan', telefono_contacto: '3001112233',
+    contactar_dia: 'miércoles 16 de septiembre de 2026', contactar_hora: '18:00',
+  }, {})
+  assert.match(tarde, /^NO SE PROGRAMÓ: .*4:15 pm/)
+  assert.equal(encolados.length, 1)
+})

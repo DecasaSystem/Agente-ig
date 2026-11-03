@@ -911,6 +911,32 @@
           "\\d+ unidades"
         ]
       }
+    },
+    {
+      "id": "contactar-mas-tarde",
+      "categoria": "asesor",
+      "por_que": "Caso real 2026-11-03: \"me gustaría mañana porque ahorita no puedo, ¿qué tal mañana a las 11?\". Elena dijo \"te agendamos\" sin que nada llegara al sistema. Debe llamar la herramienta con contactar_dia y contactar_hora.",
+      "mensajes": [
+        "Hola, soy Joan Esteban, quiero cotizar la base abanica pero más grande, mi celular es 3001234567",
+        "Sí, pero me gustaría que me contacten mañana porque ahorita no puedo, ¿qué tal mañana a las 11 de la mañana?"
+      ],
+      "esperado": {
+        "herramientas": [
+          "transferir_asesor"
+        ],
+        "argumentos": [
+          {
+            "herramienta": "transferir_asesor",
+            "tiene": {
+              "contactar_dia": "*",
+              "contactar_hora": "*"
+            }
+          }
+        ],
+        "texto_prohibido": [
+          "te agendamos (una )?(cita|visita)"
+        ]
+      }
     }
   ]
 }
