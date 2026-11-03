@@ -20,6 +20,13 @@ const fechas = require('./fechas');
 
 const DIAS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// Una hora de negocio.json en minutos desde medianoche: 17 → 1020, "16:35" → 995. Desde
+// el 2026-10-31 el cierre entre semana es a las 4:35 pm y ya no cabía en una hora entera.
+function aMinutos(valor) {
+  const m = String(valor ?? '').trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
+  return m ? parseInt(m[1]) * 60 + (m[2] ? parseInt(m[2]) : 0) : NaN;
+}
+
 function estadoHorario(negocio, margenCierreMin = 0, ahora = new Date()) {
   const partes = new Intl.DateTimeFormat('en-US', {
     timeZone: negocio.zonaHoraria, weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false,
@@ -32,8 +39,8 @@ function estadoHorario(negocio, margenCierreMin = 0, ahora = new Date()) {
 
   const h        = negocio.horario;
   const rango    = dia === 'Sat' ? h.sabado : h.semana;
-  const apertura = rango.abre * 60;
-  const cierre   = rango.cierra * 60 - margenCierreMin;
+  const apertura = aMinutos(rango.abre);
+  const cierre   = aMinutos(rango.cierra) - margenCierreMin;
 
   const hoy = fechas.hoy(ahora);
   const cerradoHoy = (dia === 'Sun' && h.domingoCerrado)
@@ -64,4 +71,4 @@ function estadoHorario(negocio, margenCierreMin = 0, ahora = new Date()) {
   return { abierto, proximaApertura };
 }
 
-module.exports = { estadoHorario };
+module.exports = { estadoHorario, aMinutos };

@@ -224,7 +224,7 @@
       ],
       "esperado": {
         "texto_contiene": [
-          "horario|cerrado|hasta las|8am|5pm"
+          "horario|cerrado|hasta las|8am|4:35"
         ]
       }
     },

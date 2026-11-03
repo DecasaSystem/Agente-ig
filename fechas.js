@@ -185,11 +185,12 @@ function parsearFechaCita(texto, referencia = hoy()) {
 // negocio. Devuelve { ok: true, fecha, hora } o { ok: false, error } con un texto pensado
 // para que el modelo se lo explique al cliente y vuelva a preguntar.
 //
-// Horario por defecto: Lun-Vie 8am-5pm (última cita 4pm), Sáb 8am-12pm (última 11am),
+// Horario por defecto: Lun-Vie 8am-4:35pm (última cita 4pm), Sáb 8am-12pm (última 11am),
 // domingo cerrado. Antes se aceptaba 17:45 un martes porque el tope era `h > 17`.
+// Los agentes pasan el de negocio.json (negocio.horarioCitas); este es el respaldo.
 const HORARIO_DEFECTO = {
-  semana: { desde: 8, ultima: 16 },
-  sabado: { desde: 8, ultima: 11 },
+  semana: { desde: 8, ultima: 16, cierra: '4:35pm' },
+  sabado: { desde: 8, ultima: 11, cierra: '12pm' },
 };
 
 function validarFechaHoraCita(dia, hora, { referencia = hoy(), horario = HORARIO_DEFECTO, cerradoEnFestivos = true } = {}) {
@@ -229,9 +230,10 @@ function validarFechaHoraCita(dia, hora, { referencia = hoy(), horario = HORARIO
   const esSabado = f.fecha.getUTCDay() === 6;
   const rango = esSabado ? horario.sabado : horario.semana;
   if (h < rango.desde || h > rango.ultima || (h === rango.ultima && min > 0) || min < 0 || min > 59) {
+    const ultima = rango.ultima > 12 ? `${rango.ultima - 12}:00 pm` : `${rango.ultima}:00 am`;
     const txt = esSabado
-      ? `Sábado atendemos de ${rango.desde}am a 12pm (última cita ${rango.ultima}:00).`
-      : `De lunes a viernes atendemos de ${rango.desde}am a 5pm (última cita ${rango.ultima - 12}:00 pm).`;
+      ? `Sábado atendemos de ${rango.desde}am a ${rango.cierra ?? '12pm'} (última cita ${ultima}).`
+      : `De lunes a viernes atendemos de ${rango.desde}am a ${rango.cierra ?? '4:35pm'} (última cita ${ultima}).`;
     return { ok: false, error: `Hora fuera de horario. ${txt} Pídele al cliente otra hora dentro de ese rango.` };
   }
 

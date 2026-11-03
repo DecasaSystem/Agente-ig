@@ -23,7 +23,8 @@
   "horario": {
     "semana": {
       "abre": 8,
-      "cierra": 17,
+      "_cierra": "Se puede escribir como hora entera (12) o con minutos (\"16:35\"). Dueño, 2026-10-31: entre semana se atiende hasta las 4:35 pm.",
+      "cierra": "16:35",
       "ultimaCita": 16
     },
     "sabado": {
@@ -32,8 +33,8 @@
       "ultimaCita": 11
     },
     "domingoCerrado": true,
-    "texto": "Lunes-Viernes 8am-5pm | Sábado 8am-12pm | Domingos y festivos cerrado",
-    "textoPublico": "🕐 Lunes a viernes 8am-5pm y sábados 8am-12pm (domingos y festivos cerrado)",
+    "texto": "Lunes-Viernes 8am-4:35pm | Sábado 8am-12pm | Domingos y festivos cerrado",
+    "textoPublico": "🕐 Lunes a viernes 8am-4:35pm y sábados 8am-12pm (domingos y festivos cerrado)",
     "margenCierreTransferenciaMin": 20,
     "_cerradoEnFestivos": "Las tiendas no abren en festivos de Colombia (confirmado por el dueño, 2026-10-08): el agente no agenda citas esos días y los marca en la lista de próximos días. Los festivos se calculan solos (fechas.js → festivosColombia).",
     "cerradoEnFestivos": true
@@ -244,7 +245,7 @@
     "complementos": "sofá → mesa de centro; cama → colchón, mesa de noche o throw (pie de cama); base de comedor → sillas (aclarando que se venden por separado); sillas → base de comedor"
   },
   "saludos": {
-    "whatsapp": "¡Hola! 👋 Soy Elena, tu asesora de DeCasa.\n\n🏠 Especialistas en muebles de madera Flor Morado (más de 200 productos)\n📍 Tiendas en Armenia y Pereira\n\n📦 Categorías: Sillas, Bases de Comedor, Camas, Mesas, Sofás, Colchones\n🕐 Horario: L-V 8am-5pm | Sábado 8am-12pm\n\n📸 ¿Nos compartes una foto o captura de lo que buscas? Si alcanzas a ver el nombre del producto, cuéntanoslo también así te ayudamos más rápido\n🙋 Y si en algún momento prefieres hablar con un asesor, solo dímelo\n\n💬 ¿Qué mueble estás buscando hoy? 😊",
+    "whatsapp": "¡Hola! 👋 Soy Elena, tu asesora de DeCasa.\n\n🏠 Especialistas en muebles de madera Flor Morado (más de 200 productos)\n📍 Tiendas en Armenia y Pereira\n\n📦 Categorías: Sillas, Bases de Comedor, Camas, Mesas, Sofás, Colchones\n🕐 Horario: L-V 8am-4:35pm | Sábado 8am-12pm\n\n📸 ¿Nos compartes una foto o captura de lo que buscas? Si alcanzas a ver el nombre del producto, cuéntanoslo también así te ayudamos más rápido\n🙋 Y si en algún momento prefieres hablar con un asesor, solo dímelo\n\n💬 ¿Qué mueble estás buscando hoy? 😊",
     "instagram": "¡Hola! 😊 Soy Elena, tu asesora de DeCasa. ¿Estás buscando algún mueble o necesitas asesoría? 🛋️ Si nos compartes una foto o captura, cuéntanos también el nombre del producto si lo alcanzas a ver 📸 Y si prefieres hablar con un asesor, solo dímelo 🙋"
   },
   "seguimientos": {

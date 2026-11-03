@@ -179,6 +179,19 @@ function notaDeVenta(categoria) {
 
 const op = cfg.operacion ?? {};
 
+// "16:35" → "4:35pm", 12 → "12pm", 8 → "8am": para decirle al cliente hasta qué hora.
+function horaTexto(valor) {
+  const m = String(valor ?? '').trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (!m) return String(valor ?? '');
+  const h = parseInt(m[1]);
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}${m[2] && m[2] !== '00' ? `:${m[2]}` : ''}${h >= 12 ? 'pm' : 'am'}`;
+}
+
+function rangoCitas(r = {}) {
+  return { desde: parseInt(r.abre), ultima: Number(r.ultimaCita), cierra: horaTexto(r.cierra) };
+}
+
 module.exports = {
   cfg,
   RUTA,
@@ -204,6 +217,12 @@ module.exports = {
   comprasWhatsapp, emailPrivacidad,
   // Horario / operación
   horario: cfg.horario,
+  // El mismo horario en la forma que valida las citas (fechas.validarFechaHoraCita). Antes
+  // las citas usaban un horario escrito aparte en fechas.js y decían "hasta las 5pm".
+  horarioCitas: {
+    semana: rangoCitas(cfg.horario.semana),
+    sabado: rangoCitas(cfg.horario.sabado),
+  },
   cerradoEnFestivos: cfg.horario.cerradoEnFestivos !== false,
   margenCierreTransferenciaMin: cfg.horario.margenCierreTransferenciaMin ?? 20,
   ventanaConversacionMinutos: op.ventanaConversacionMinutos ?? 45,

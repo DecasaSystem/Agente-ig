@@ -251,7 +251,7 @@ test('respuestaPublicaComentario: ubicación y horario dan el dato, sin precios'
   assert.doesNotMatch(ubi, /\$/)
 
   const hor = agente.respuestaPublicaComentario('horario')
-  assert.match(hor, /8am-5pm/)
+  assert.match(hor, /8am-4:35pm/)
   assert.match(hor, /domingo/i)
 
   // El catálogo se anuncia en público pero el enlace va por privado
@@ -398,10 +398,10 @@ test('estadoHorario: dentro y fuera del horario normal (sin margen)', () => {
   const { estadoHorario } = agente
   // Martes 10:00 → abierto
   assert.equal(estadoHorario(0, new Date('2026-09-15T15:00:00Z')).abierto, true)
-  // Martes 16:50 → todavía abierto sin margen
-  assert.equal(estadoHorario(0, new Date('2026-09-15T21:50:00Z')).abierto, true)
-  // Martes 17:00 → cerrado, responden mañana
-  assert.deepEqual(estadoHorario(0, new Date('2026-09-15T22:00:00Z')), { abierto: false, proximaApertura: 'mañana a partir de las 8am' })
+  // Martes 16:34 → todavía abierto sin margen (cierre 4:35 pm, dueño 2026-10-31)
+  assert.equal(estadoHorario(0, new Date('2026-09-15T21:34:00Z')).abierto, true)
+  // Martes 16:35 → cerrado, responden mañana
+  assert.deepEqual(estadoHorario(0, new Date('2026-09-15T21:35:00Z')), { abierto: false, proximaApertura: 'mañana a partir de las 8am' })
   // Sábado 11:30 → abierto; sábado 12:30 → cerrado hasta el lunes
   assert.equal(estadoHorario(0, new Date('2026-09-19T16:30:00Z')).abierto, true)
   assert.equal(estadoHorario(0, new Date('2026-09-19T17:30:00Z')).proximaApertura, 'el lunes a partir de las 8am')
@@ -409,13 +409,13 @@ test('estadoHorario: dentro y fuera del horario normal (sin margen)', () => {
   assert.equal(estadoHorario(0, new Date('2026-09-20T15:00:00Z')).proximaApertura, 'mañana lunes a partir de las 8am')
 })
 
-test('estadoHorario: con el margen de transferencia, desde las 4:40 pm ya es "mañana"', () => {
+test('estadoHorario: con el margen de transferencia, desde las 4:15 pm ya es "mañana"', () => {
   const { estadoHorario, MARGEN_CIERRE_TRANSFERENCIA_MIN } = agente
   assert.equal(MARGEN_CIERRE_TRANSFERENCIA_MIN, 20)
-  // Martes 16:39 → aún se transfiere en el momento
-  assert.equal(estadoHorario(20, new Date('2026-09-15T21:39:00Z')).abierto, true)
-  // Martes 16:40 → fuera de horario para transferir
-  assert.deepEqual(estadoHorario(20, new Date('2026-09-15T21:40:00Z')), { abierto: false, proximaApertura: 'mañana a partir de las 8am' })
+  // Martes 16:14 → aún se transfiere en el momento (cierre 4:35 pm − 20 min)
+  assert.equal(estadoHorario(20, new Date('2026-09-15T21:14:00Z')).abierto, true)
+  // Martes 16:15 → fuera de horario para transferir
+  assert.deepEqual(estadoHorario(20, new Date('2026-09-15T21:15:00Z')), { abierto: false, proximaApertura: 'mañana a partir de las 8am' })
   // Viernes 16:45 → el lunes
   assert.equal(estadoHorario(20, new Date('2026-09-18T21:45:00Z')).proximaApertura, 'el lunes a partir de las 8am')
   // Sábado 11:45 → el lunes

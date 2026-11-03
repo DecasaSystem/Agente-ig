@@ -1447,7 +1447,7 @@ async function ejecutarTool(psid, nombre, args, userInfo) {
       // no sea domingo y que el día de la semana que dijo el modelo coincida con la fecha.
       // Antes bastaba con que apareciera la palabra "martes" en el texto, y el asesor
       // recibía citas como "martes 3 de junio de 2026" (que es miércoles).
-      const val = fechas.validarFechaHoraCita(args.dia, args.hora, { cerradoEnFestivos: negocio.cerradoEnFestivos })
+      const val = fechas.validarFechaHoraCita(args.dia, args.hora, { horario: negocio.horarioCitas, cerradoEnFestivos: negocio.cerradoEnFestivos })
       if (!val.ok) return val.error
 
       const diaTexto   = val.fecha.texto.charAt(0).toUpperCase() + val.fecha.texto.slice(1)
